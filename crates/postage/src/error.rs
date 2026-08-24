@@ -2,12 +2,15 @@
 
 use crate::BatchId;
 use alloy_primitives::Address;
-use nectar_primitives::{ChunkAddress, wire::Underrun};
+use nectar_primitives::{ChunkAddress, error::BoxedError, wire::Underrun};
 use thiserror::Error;
 
 /// Errors that can occur when working with stamps.
+///
+/// No `Clone`, `PartialEq` or `Eq`: [`External`] holds a boxed source that is
+/// none of them.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Error)]
 pub enum StampError {
     /// The owner recovered from the signature doesn't match the batch owner.
     #[error("owner mismatch: expected {expected}, got {actual}")]
@@ -110,14 +113,16 @@ pub enum StampError {
 
     /// A chunk operation in `nectar-primitives` failed (for example decoding or
     /// address verification of the chunk half of a stamped chunk).
-    ///
-    /// The variant carries a `&'static str` context rather than embedding the
-    /// underlying [`nectar_primitives::PrimitivesError`]: [`StampError`] is
-    /// `Clone`, `PartialEq` and `Eq`, whereas `PrimitivesError` is none of these
-    /// (it carries `std::io::Error` among others), and this crate is `no_std`
-    /// without `alloc`, so an owned `String` message is not available either.
     #[error("chunk error: {0}")]
     Chunk(&'static str),
+
+    /// An error produced beyond this crate's boundary, by a crate that depends
+    /// on it.
+    ///
+    /// The concrete error is kept as the source so its message and type survive
+    /// the boundary for logging and downcast.
+    #[error("stamp crate failure")]
+    External(#[source] BoxedError),
 }
 
 impl From<Underrun> for StampError {

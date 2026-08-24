@@ -383,10 +383,18 @@ mod tests {
         let admission = AdmissionWindow::new(window(1));
         let held = permit(expected).with_token(admission.try_acquire().unwrap());
 
-        assert_eq!(
-            held.seal::<_, DEFAULT_BODY_SIZE>(other, signature(), &bound())
-                .unwrap_err(),
-            StampError::AddressMismatch { expected, offered }
+        let sealed = held
+            .seal::<_, DEFAULT_BODY_SIZE>(other, signature(), &bound())
+            .unwrap_err();
+        assert!(
+            matches!(
+                sealed,
+                StampError::AddressMismatch {
+                    expected: e,
+                    offered: o
+                } if e == expected && o == offered
+            ),
+            "expected an AddressMismatch for {expected} / {offered}"
         );
         assert_eq!(admission.in_flight(), 0);
     }

@@ -5,16 +5,24 @@ use alloy_primitives::Address;
 use core::cell::{Ref, RefCell};
 use nectar_postage::{BatchDepth, BatchId, Bucket, StampError};
 use nectar_postage_issuer::{Prepared, StampIssuer};
-use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
+use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec, error::BoxedError};
 
 use crate::Snapshot;
 use crate::error::UsageError;
 
 /// Maps a usage table error onto a stamp issuer error.
-const fn map_usage_error(err: UsageError) -> StampError {
+///
+/// `BucketFull` maps to its own variant. No other usage-table condition has a
+/// stamp-contract name, so the rest cross the boundary boxed: the concrete
+/// error stays the source, so its message and type survive for logging and
+/// downcast instead of collapsing into a misnamed variant.
+fn map_usage_error(err: UsageError) -> StampError {
     match err {
         UsageError::BucketFull { bucket, capacity } => StampError::BucketFull { bucket, capacity },
-        _ => StampError::InvalidIndex,
+        err => {
+            let boxed: BoxedError = Box::new(err);
+            StampError::External(boxed)
+        }
     }
 }
 
@@ -146,5 +154,36 @@ impl<S: SwarmSpec> StampIssuer for SnapshotIssuer<S> {
         } else {
             Some(snapshot.table_ref().total_issued())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::error::Error;
+
+    use super::*;
+
+    #[test]
+    fn bucket_full_maps_to_its_own_variant() {
+        let mapped = map_usage_error(UsageError::BucketFull {
+            bucket: 3,
+            capacity: 7,
+        });
+        assert!(matches!(
+            mapped,
+            StampError::BucketFull {
+                bucket: 3,
+                capacity: 7
+            }
+        ));
+    }
+
+    #[test]
+    fn every_other_variant_keeps_its_error_as_the_source() {
+        let original = UsageError::StaleSequence { next: 1, floor: 2 };
+        let mapped = map_usage_error(original.clone());
+        assert!(matches!(mapped, StampError::External(_)));
+        let source = mapped.source().expect("the carrier holds the source");
+        assert!(source.downcast_ref::<UsageError>() == Some(&original));
     }
 }
