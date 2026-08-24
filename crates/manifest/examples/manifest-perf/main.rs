@@ -15,7 +15,7 @@ mod corpus;
 mod measure;
 mod results;
 
-use std::error::Error;
+use core::error::Error;
 use std::path::PathBuf;
 
 use nectar_testing::bench::RunMeta;

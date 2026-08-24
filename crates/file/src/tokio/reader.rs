@@ -67,7 +67,7 @@ impl<S, const B: usize> Unpin for TokioReader<S, B> where S: TrustedGet<ContentO
 impl<S, const B: usize> AsyncRead for TokioReader<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
-    S::Error: std::error::Error + Send + Sync + 'static,
+    S::Error: core::error::Error + Send + Sync + 'static,
 {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -89,7 +89,7 @@ where
 impl<S, const B: usize> AsyncSeek for TokioReader<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
-    S::Error: std::error::Error + Send + Sync + 'static,
+    S::Error: core::error::Error + Send + Sync + 'static,
 {
     /// Seeks resolve synchronously here; completion only reports the
     /// position.

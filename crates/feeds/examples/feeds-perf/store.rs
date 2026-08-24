@@ -2,7 +2,7 @@
 //! present-then-absent feed of `n` updates, the boundary update resident for
 //! the one certified retrieval.
 
-use std::error::Error;
+use core::error::Error;
 use std::time::Duration;
 
 use nectar_feeds::{Publisher, Sequence};

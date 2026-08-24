@@ -2,8 +2,8 @@
 //! store and read probes, wasted probes, certified gets and rounds, the
 //! rounds off a paused virtual clock.
 
+use core::error::Error;
 use core::num::NonZeroUsize;
-use std::error::Error;
 use std::future::Future;
 
 use nectar_feeds::{Reader, Sequence};

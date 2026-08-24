@@ -7,7 +7,7 @@
 //! every probe is a full retrieval; presence probes stand in here, so a cell
 //! carries no certified get.
 
-use std::error::Error;
+use core::error::Error;
 
 use futures_util::future::join_all;
 use nectar_feeds::{Feed, Sequence};

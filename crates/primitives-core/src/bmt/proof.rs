@@ -107,8 +107,9 @@ impl Prover for Hasher {
         // past the tree width is ignored, matching the hashing geometry.
         let mut leaves = [[0u8; SEGMENT_SIZE]; BRANCHES];
         for (leaf, chunk) in leaves.iter_mut().zip(data.chunks(SEGMENT_SIZE)) {
-            for (dst, src) in leaf.iter_mut().zip(chunk) {
-                *dst = *src;
+            // Zero-pad the leaf: bytes past the end of `data` stay zero.
+            if let Some(dst) = leaf.get_mut(0..chunk.len()) {
+                dst.copy_from_slice(chunk);
             }
         }
 

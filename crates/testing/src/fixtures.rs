@@ -1,8 +1,8 @@
 //! Shared fixtures: whole-buffer splits into a fresh memory store, and spec
 //! doubles that move the collision-bucket floor off mainnet's 16.
 
+use core::error::Error;
 use core::num::NonZeroU8;
-use std::error::Error;
 use std::sync::Arc;
 
 use nectar_file::{File, Plain, Policy, SplitMode};
