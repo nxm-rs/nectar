@@ -72,32 +72,6 @@ pub enum StampError {
         max: u8,
     },
 
-    /// The batch was not found.
-    #[error("batch not found: {0}")]
-    BatchNotFound(BatchId),
-
-    /// The batch is not yet usable (needs more confirmations).
-    #[error(
-        "batch not usable: created at block {created}, current block {current}, need {threshold} confirmations"
-    )]
-    BatchNotUsable {
-        /// Block when batch was created.
-        created: u64,
-        /// Current block number.
-        current: u64,
-        /// Required confirmations.
-        threshold: u64,
-    },
-
-    /// The batch has expired.
-    #[error("batch expired: value {value} <= total_amount {total_amount}")]
-    BatchExpired {
-        /// Current batch value.
-        value: u128,
-        /// Total amount consumed.
-        total_amount: u128,
-    },
-
     /// Invalid stamp data format.
     #[error("invalid stamp data: {0}")]
     InvalidData(&'static str),
