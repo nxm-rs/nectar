@@ -20,10 +20,7 @@ workspace = true
 [dependencies]
 # nectar
 nectar-marker.workspace = true
-
-## chain
-# The settlement chain a named swarm runs on.
-alloy-chains = { workspace = true }
+nectar-spec.workspace = true
 
 ## alloy crypto
 # Signature recovery (k256) is part of the bare-metal verify closure; the
@@ -42,8 +39,6 @@ keccak-batch = { workspace = true, optional = true }
 
 ## derive macros
 derive_more.workspace = true
-num_enum.workspace = true
-strum.workspace = true
 
 # Core dependencies
 bytes.workspace = true
@@ -85,18 +80,22 @@ rand.workspace = true
 [features]
 default = [ "sign", "std" ]
 std = [
-	"alloy-chains/std",
 	"dep:keccak-batch",
 	"dep:rayon",
 	"k256/precomputed-tables",
 	"k256/std",
-	"strum/std",
+	"nectar-spec/std",
 ]
 # The signer stack: signing is not part of the verify closure, so it rides a
 # feature of its own that a verify-only build never enables.
 sign = [ "dep:alloy-signer", "dep:alloy-signer-local", "std" ]
-serde = [ "dep:serde" ]
-arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "sign" ]
+serde = [ "dep:serde", "nectar-spec/serde" ]
+arbitrary = [
+	"alloy-primitives/arbitrary",
+	"dep:arbitrary",
+	"nectar-spec/arbitrary",
+	"sign",
+]
 # Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
 # the wasm32 relaxation of the boxed store-error aliases on any target, and
 # forwards to nectar-marker so the MaybeSend/MaybeSync bounds in

@@ -1,0 +1,48 @@
+[package]
+name = "nectar-spec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Swarm network identity: the SwarmSpec trait, the canonical markers, network ids and the named-swarm tables"
+documentation = "https://docs.rs/nectar-spec"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "no-std"]
+categories = ["data-structures", "no-std"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The settlement chain a named swarm runs on.
+alloy-chains = { workspace = true }
+
+# derive macros
+derive_more.workspace = true
+num_enum.workspace = true
+strum.workspace = true
+
+# Core dependencies
+thiserror.workspace = true
+serde = { workspace = true, optional = true }
+arbitrary = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Linked for the test builds: the `#[cfg(any(test, feature = "arbitrary"))]`
+# impls name the crate directly.
+arbitrary = { workspace = true }
+proptest.workspace = true
+
+[features]
+default = [ "std" ]
+std = [ "alloy-chains/std", "strum/std" ]
+serde = [ "dep:serde" ]
+arbitrary = [ "dep:arbitrary" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

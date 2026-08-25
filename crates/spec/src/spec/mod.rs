@@ -24,8 +24,9 @@ use crate::{Bin, NetworkId, ProximityOrder};
 /// overridden per deployment. Defaulted consts can be added without breaking
 /// implementors.
 pub trait SwarmSpec {
-    /// Network identifier used in [`compute_overlay`](crate::compute_overlay)
-    /// and the BzzAddress sign-data.
+    /// Network identifier mixed into the overlay address of the
+    /// `nectar-primitives-core` crate and the BzzAddress sign-data
+    /// (`nectar-primitives`).
     const NETWORK_ID: NetworkId;
 
     /// Maximum proximity order (= number of bins minus one).

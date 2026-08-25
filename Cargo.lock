@@ -2476,6 +2476,7 @@ version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
+ "nectar-spec",
  "serde",
 ]
 
@@ -2743,7 +2744,6 @@ dependencies = [
 name = "nectar-primitives-core"
 version = "0.4.0"
 dependencies = [
- "alloy-chains",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
@@ -2756,17 +2756,30 @@ dependencies = [
  "k256",
  "keccak-batch",
  "nectar-marker",
+ "nectar-spec",
  "nectar-testing",
- "num_enum",
  "once_cell",
  "proptest",
  "proptest-arbitrary-interop",
  "rand 0.10.1",
  "rayon",
  "serde",
- "strum 0.28.0",
  "thiserror",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "nectar-spec"
+version = "0.4.0"
+dependencies = [
+ "alloy-chains",
+ "arbitrary",
+ "derive_more",
+ "num_enum",
+ "proptest",
+ "serde",
+ "strum 0.28.0",
+ "thiserror",
 ]
 
 [[package]]

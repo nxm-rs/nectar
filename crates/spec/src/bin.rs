@@ -47,9 +47,10 @@ impl Bin {
     #[allow(clippy::as_conversions)]
     pub const COUNT: usize = MAX_PO as usize + 1;
 
-    /// Construct without bounds checking. Caller must ensure `raw <= MAX_PO`.
+    /// Construct without bounds checking. Caller must ensure `raw <= MAX_PO`;
+    /// a range-valid input is a valid bin, so the unchecked form is sound.
     #[inline]
-    pub(crate) const fn new_unchecked(raw: u8) -> Self {
+    pub const fn new_unchecked(raw: u8) -> Self {
         debug_assert!(raw <= MAX_PO);
         Self(raw)
     }

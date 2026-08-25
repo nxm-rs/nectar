@@ -110,8 +110,8 @@ jobs:
                                nectar-envelope nectar-postage \
                                nectar-postage-issuer nectar-postage-usage \
                                nectar-contracts nectar-file \
-                               nectar-marker nectar-clock nectar-governor \
-                               nectar-tasks; do
+                               nectar-spec nectar-marker nectar-clock \
+                               nectar-governor nectar-tasks; do
                       cargo rustc --locked -p "$crate" --lib -- -D unused_crate_dependencies
                   done
                   # nectar-mantaray by path: the editor's differential gate pins a
