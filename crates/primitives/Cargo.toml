@@ -99,11 +99,11 @@ serde_json = { workspace = true, features = ["std"] }
 default = [ "std" ]
 std = [
 	"alloy-chains/std",
-	"dep:nectar-tasks",
 	"dep:parking_lot",
 	"dep:web-time",
 	"nectar-clock/std",
 	"nectar-primitives-core/std",
+	"nectar-tasks/std",
 	"strum/std",
 ]
 serde = [ "alloy-chains/serde", "dep:serde", "nectar-primitives-core/serde" ]
