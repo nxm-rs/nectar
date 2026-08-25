@@ -9,7 +9,7 @@ use crate::bmt::{Hasher, constants::*};
 use crate::error::Result;
 
 /// Represents a proof for a specific segment in a Binary Merkle Tree
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Proof {
     /// The segment index this proof is for
     pub segment_index: usize,
@@ -22,8 +22,11 @@ pub struct Proof {
     pub proof_segments: [B256; PROOF_LENGTH],
     /// The span of the data
     pub span: u64,
-    /// Optional prefix (used during verification)
-    pub prefix: Option<Vec<u8>>,
+    /// The anchor prefix the tree was hashed under, a fixed 32-byte value.
+    ///
+    /// A [`B256::ZERO`] value carries no anchor bytes, which is the case the
+    /// plain root has always had.
+    pub prefix: B256,
 }
 
 impl Proof {
@@ -33,7 +36,7 @@ impl Proof {
         segment: B256,
         proof_segments: [B256; PROOF_LENGTH],
         span: u64,
-        prefix: Option<Vec<u8>>,
+        prefix: B256,
     ) -> Self {
         Self {
             segment_index,
@@ -53,7 +56,11 @@ impl Proof {
         let mut current_hash = self.segment;
         let mut current_index = self.segment_index;
 
-        let prefix = self.prefix.as_deref();
+        let prefix = if self.prefix.is_zero() {
+            None
+        } else {
+            Some(self.prefix.as_slice())
+        };
 
         // Apply each proof segment to compute the root
         for proof_segment in &self.proof_segments {
@@ -123,13 +130,18 @@ impl Prover for Hasher {
         };
         let segment = B256::from(segment_bytes);
 
-        // Include the prefix in the proof if there is one
-        let prefix = if self.prefix().is_empty() {
+        // A proof carries the fixed 32-byte anchor; a prefix of any other
+        // length cannot name one.
+        let prefix = match self.prefix().len() {
+            0 => B256::ZERO,
+            32 => B256::from_slice(self.prefix()),
+            len => return Err(BmtError::AnchorPrefix { len }.into()),
+        };
+        let prefix_ref = if prefix.is_zero() {
             None
         } else {
-            Some(self.prefix().to_vec())
+            Some(prefix.as_slice())
         };
-        let prefix_ref = prefix.as_deref();
 
         // Walk the tree bottom-up, batching each level's sibling pairs across
         // SIMD lanes. Zero padding is hashed literally, so under a prefix

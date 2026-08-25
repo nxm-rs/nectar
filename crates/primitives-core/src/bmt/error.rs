@@ -12,4 +12,10 @@ pub enum BmtError {
         /// The number of leaf segments in the tree.
         branches: usize,
     },
+    /// The hasher prefix is not a fixed 32-byte anchor.
+    #[error("a proof anchor is 32 bytes; the hasher prefix is {len}")]
+    AnchorPrefix {
+        /// The length, in bytes, of the hasher prefix.
+        len: usize,
+    },
 }

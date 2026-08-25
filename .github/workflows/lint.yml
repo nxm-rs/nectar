@@ -113,7 +113,7 @@ jobs:
                   for crate in nectar-primitives nectar-primitives-core \
                                nectar-envelope nectar-postage \
                                nectar-postage-primitives nectar-postage-issuer \
-                               nectar-postage-usage \
+                               nectar-postage-usage nectar-proof \
                                nectar-contracts nectar-file \
                                nectar-spec nectar-marker nectar-clock \
                                nectar-governor nectar-tasks; do

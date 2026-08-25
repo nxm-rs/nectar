@@ -1,0 +1,142 @@
+{
+    "provenance": {
+        "generator": "tools/stamp-vectors",
+        "command": "go run . -out ../../crates/postage/tests/testdata/reference-stamps.json",
+        "reference": "github.com/ethersphere/bee/v2 v2.7.0",
+        "generated_at": "2026-08-25T13:33:16Z",
+        "notes": [
+            "the arm re-runs the reference client's makeInclusionProofs construction with a 32-byte anchor in place of the regression test's one-byte anchor",
+            "the witness content is the literal chunks Unstoppable data! Chunk #1..16, with the regression test's identifiers, secp256k1 key and stamp fields",
+            "the anchor is 31 zero bytes followed by one, kept sparse on purpose",
+            "every emitted proof self-verifies with the reference client's own bmt Prover.Verify before the document is written"
+        ]
+    },
+    "anchor": "0x0000000000000000000000000000000000000000000000000000000000000001",
+    "sampleChunkAddress": "0xd3d24e90479fd3717009ea105a787ceeccba33be168b6720700e9f2517332264",
+    "proofs": {
+        "proof1": {
+            "proofSegments": [
+                "0x06026942755d19d7ec08cafa5754ccf9044030da7877fef5ae1ae3dd222649b4",
+                "0xd2c3c164551616b6d9d411e71a797fb77fb49c0a1e95c482eb80ada7b31f031b",
+                "0x2821f521afdb02b0cee0fd6d8c38241d43c19a5c44c1cd6f18a6e42751a35e84",
+                "0xc397ef92f2d42cce2cbb06f366b106257649a2873176ea93c6e98d040c12d987",
+                "0xd53024313339d4044579a62e0082bf7f8c0e170489fb650cd0f3edba761545b2",
+                "0x0eb01ebfc9ed27500cd4dfc979272d1f0913cc9f66540d7e8005811109e1cf2d",
+                "0x887c22bd8750d34016ac3c66b5ff102dacdd73f6b014e710b51e8022af9a1968"
+            ],
+            "proveSegment": "0x50d8d67cdb7af8981adf32a7e352c18e8067050d10194c2953b8971bfc19627e",
+            "proofSegments2": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "0xad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
+                "0xb4c11951957c6f8f642c4af61cd6b24640fec6dc7fc607ee8206a99e92410d30",
+                "0x21ddb9a356815c3fac1026b6dec5df3124afbadb485c9ba5a3e3398a04b7ba85",
+                "0x1cf6a30577d581cf6a67ef6864d2359aa3407fa2fea5b63af22fdf87284a3c43",
+                "0x0eb01ebfc9ed27500cd4dfc979272d1f0913cc9f66540d7e8005811109e1cf2d",
+                "0x887c22bd8750d34016ac3c66b5ff102dacdd73f6b014e710b51e8022af9a1968"
+            ],
+            "proveSegment2": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "chunkSpan": 27,
+            "proofSegments3": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "0x255ace0592d6d0057743ec81f2494d71fe5466986a2fd6f28c632dc1ef83d48b",
+                "0x8cd2a10696174d0eafce7a29b1b65f24c74c818f9ba1630d172e4eb9cbd56bf7",
+                "0x67635e81d1986218c744b6a7ffccdab7d15b8ffd4463c656e195242dbffd1e50",
+                "0xf9cd97b5d28e195bc685928727b8a9b925bef60a8df79adeba88b841d9cf0595",
+                "0x1002ec2c4f88945cfd1ec2a962bfcd2281462337079de60fa91f28d2db968fe6",
+                "0x184c8008217b725dc5ce228c1b92bc6b0022629a94b92cf4ae3ad727d428531f"
+            ],
+            "postageProof": {
+                "signature": "CdsOzYfeT8x0zdfsBFlQlB1gbKwo2O6PUsuvoD2BTxg1IbbF57L1yo9x1OgeQ3BRC3+Ur9zCikq0icnpkUacBBs=",
+                "postageId": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef",
+                "index": 525059,
+                "timeStamp": 197384
+            },
+            "socProof": []
+        },
+        "proof2": {
+            "proofSegments": [
+                "0x4002040ce2624895f700d7a335c6cb5838bc7e4474762868ac22467684e23ab1",
+                "0x2100f1e0a3fffd2a3e84448fc7f004851200785fd9f8fe8173b2cfb2bb6187a2",
+                "0x5103e4d793baf37c9f182855fa0938e3fe9121ff9943be525c396d080d051dbd",
+                "0xc397ef92f2d42cce2cbb06f366b106257649a2873176ea93c6e98d040c12d987",
+                "0xd53024313339d4044579a62e0082bf7f8c0e170489fb650cd0f3edba761545b2",
+                "0x0eb01ebfc9ed27500cd4dfc979272d1f0913cc9f66540d7e8005811109e1cf2d",
+                "0x887c22bd8750d34016ac3c66b5ff102dacdd73f6b014e710b51e8022af9a1968"
+            ],
+            "proveSegment": "0x04a60acb043bf6af06f8f102e1e7f566603162b471324df5c20234913c7bf878",
+            "proofSegments2": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "0xad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
+                "0xb4c11951957c6f8f642c4af61cd6b24640fec6dc7fc607ee8206a99e92410d30",
+                "0x21ddb9a356815c3fac1026b6dec5df3124afbadb485c9ba5a3e3398a04b7ba85",
+                "0xa666b3d7c9ca35427c35ddb00e60af6f0ff7c6b168d3d813240448d601f289ff",
+                "0x0eb01ebfc9ed27500cd4dfc979272d1f0913cc9f66540d7e8005811109e1cf2d",
+                "0x887c22bd8750d34016ac3c66b5ff102dacdd73f6b014e710b51e8022af9a1968"
+            ],
+            "proveSegment2": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "chunkSpan": 26,
+            "proofSegments3": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "0x255ace0592d6d0057743ec81f2494d71fe5466986a2fd6f28c632dc1ef83d48b",
+                "0x8cd2a10696174d0eafce7a29b1b65f24c74c818f9ba1630d172e4eb9cbd56bf7",
+                "0x67635e81d1986218c744b6a7ffccdab7d15b8ffd4463c656e195242dbffd1e50",
+                "0x5418f0852e35178470bd52338b1bf2fae8c1eb0321f610f9f5b904fa6c6e2759",
+                "0x1002ec2c4f88945cfd1ec2a962bfcd2281462337079de60fa91f28d2db968fe6",
+                "0x184c8008217b725dc5ce228c1b92bc6b0022629a94b92cf4ae3ad727d428531f"
+            ],
+            "postageProof": {
+                "signature": "vDAqDnOHRdfydLi+WO47ON2ytdGR8EHCbeVGQkQ/cD1kJQ/cUMvQpLQo4bcgkOSXp6IX8YtVsgTcM9xlqHOxeBs=",
+                "postageId": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef",
+                "index": 525059,
+                "timeStamp": 197384
+            },
+            "socProof": [
+                {
+                    "signer": "0x827b44d53df2854057713b25cdd653eb70fe36c4",
+                    "signature": "oSaX7q6fkjyFA+ZgVsvT2TyCys8RFObSOgs8l4Ffs8AIAh6vaE52zZZYnThRkScyi99+YYo87ECxe9CwY9sO1xw=",
+                    "identifier": "0x155f4ef901f9a967fe6bd2d9a9e4fca1e43ed948034dcf3be33c454d29689802",
+                    "chunkAddr": "0x6f5b3aa1e39c6a916b73424d68cfa2b430a42567e3a875a30ecdb7687413af2e"
+                }
+            ]
+        },
+        "proofLast": {
+            "proofSegments": [
+                "0xf629059e0f2f9eaccb42e9b4e1af754301409011194cdac6c8ce780baf9279e2",
+                "0xe42c03f13c16007c2cc937cf3bef27b2919b9b373e952efac9fe206ed85d15ee",
+                "0x1b590dc7db58d41844f1760045904eaf9a75e4016e4b6c1868edf5576b622c45",
+                "0x9ab74f21340a7536e6451fadbb4847c2386081174d16e16de12cf8ad4a6c6a9a",
+                "0xeb15bb4a2bbe35fbccb451541339a8873e70db874cb1888e128d2471880191a6",
+                "0x0eb01ebfc9ed27500cd4dfc979272d1f0913cc9f66540d7e8005811109e1cf2d",
+                "0x887c22bd8750d34016ac3c66b5ff102dacdd73f6b014e710b51e8022af9a1968"
+            ],
+            "proveSegment": "0xc4acead28aeffef4f9470dbd1fe06f8fc3581b0a5f852985b4062f3575ed4f02",
+            "proofSegments2": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "0xad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
+                "0xb4c11951957c6f8f642c4af61cd6b24640fec6dc7fc607ee8206a99e92410d30",
+                "0x21ddb9a356815c3fac1026b6dec5df3124afbadb485c9ba5a3e3398a04b7ba85",
+                "0xeadd648325369d6cb19c225ec6a8f0e37b526eb651d655ea1dfb26322b0c7ba0",
+                "0x0eb01ebfc9ed27500cd4dfc979272d1f0913cc9f66540d7e8005811109e1cf2d",
+                "0x887c22bd8750d34016ac3c66b5ff102dacdd73f6b014e710b51e8022af9a1968"
+            ],
+            "proveSegment2": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "chunkSpan": 26,
+            "proofSegments3": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "0x255ace0592d6d0057743ec81f2494d71fe5466986a2fd6f28c632dc1ef83d48b",
+                "0x8cd2a10696174d0eafce7a29b1b65f24c74c818f9ba1630d172e4eb9cbd56bf7",
+                "0x67635e81d1986218c744b6a7ffccdab7d15b8ffd4463c656e195242dbffd1e50",
+                "0x24c852620ce4fa19f8061bcff09bd02deef6bbe595a0c5b7a9cc3c6e645bf5f9",
+                "0x1002ec2c4f88945cfd1ec2a962bfcd2281462337079de60fa91f28d2db968fe6",
+                "0x184c8008217b725dc5ce228c1b92bc6b0022629a94b92cf4ae3ad727d428531f"
+            ],
+            "postageProof": {
+                "signature": "4WPcZ409BzNdW0ByLehcZXuOM1zAbKMyHubPmWCwVNp6+Xfw0mEYGCOChBF1GFeNvMvadNkV3r/772ev3b9LVRs=",
+                "postageId": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef",
+                "index": 525059,
+                "timeStamp": 197384
+            },
+            "socProof": []
+        }
+    }
+}

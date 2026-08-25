@@ -85,7 +85,7 @@ type provenance struct {
 	Generator   string   `json:"generator"`
 	Command     string   `json:"command"`
 	Reference   string   `json:"reference"`
-	Corpus      string   `json:"corpus"`
+	Corpus      string   `json:"corpus,omitempty"`
 	GeneratedAt string   `json:"generated_at"`
 	Notes       []string `json:"notes"`
 }
@@ -139,6 +139,9 @@ func main() {
 }
 
 func generate() ([]vector, error) {
+	if err := anchor32Proofs(); err != nil {
+		return nil, fmt.Errorf("anchor32 arm: %w", err)
+	}
 	corpus, err := corpusVectors()
 	if err != nil {
 		return nil, fmt.Errorf("corpus arm: %w", err)

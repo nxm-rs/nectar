@@ -1,0 +1,35 @@
+[package]
+name = "nectar-proof"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "The authentication layer for Swarm descent proofs: how a step's bytes bind to a trusted address, and the replay loop"
+documentation = "https://docs.rs/nectar-proof"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "no_std"]
+categories = ["data-structures", "cryptography", "no-std"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The segment proof the chunk-segment authenticator replays.
+nectar-primitives = { workspace = true }
+alloy-primitives = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+
+[features]
+default = [ "std" ]
+std = [ "nectar-primitives/std" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
