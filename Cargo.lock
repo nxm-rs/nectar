@@ -2728,6 +2728,7 @@ dependencies = [
  "nectar-clock",
  "nectar-marker",
  "nectar-primitives-core",
+ "nectar-tasks",
  "nectar-testing",
  "num_enum",
  "parking_lot",

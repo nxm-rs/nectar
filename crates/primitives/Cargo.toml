@@ -24,6 +24,8 @@ nectar-marker.workspace = true
 # The chunk-verification core, re-exported wholesale at its original paths.
 # It carries the BMT and chunk deps this crate no longer names.
 nectar-primitives-core.workspace = true
+# The retry decorator re-exports the tasks delay seam under `std`.
+nectar-tasks = { workspace = true, optional = true }
 
 # The settlement chain a named swarm runs on.
 alloy-chains = { workspace = true }
@@ -101,6 +103,7 @@ std = [
 	"dep:web-time",
 	"nectar-clock/std",
 	"nectar-primitives-core/std",
+	"nectar-tasks/std",
 	"strum/std",
 ]
 serde = [ "alloy-chains/serde", "dep:serde", "nectar-primitives-core/serde" ]
@@ -117,7 +120,11 @@ encryption = [ "dep:rand" ]
 # the wasm32 relaxation of MaybeSend/MaybeSync and the boxed error aliases on
 # any target. An explicit feature rather than a target cfg so CI can exercise
 # the relaxed shape off-wasm.
-unsync = [ "nectar-marker/unsync", "nectar-primitives-core/unsync" ]
+unsync = [
+	"nectar-marker/unsync",
+	"nectar-primitives-core/unsync",
+	"nectar-tasks?/unsync",
+]
 
 [[bench]]
 name = "address"

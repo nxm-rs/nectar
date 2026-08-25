@@ -2,6 +2,9 @@
 //! held as a trait object so an embedding application can route
 //! library-spawned tasks through its own executor.
 //!
+//! [`Sleeper`] is the delay counterpart: the caller supplies the platform
+//! sleep, so a backoff loop takes no timer dependency.
+//!
 //! # Features
 //!
 //! - `std`: [`unpark_current`], a thread-unpark waker for blocking bridges
@@ -63,6 +66,8 @@ pub use self::wasm::WasmSpawner;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::fmt;
+use core::future::Future;
+use core::time::Duration;
 
 use nectar_marker::{MaybeSend, MaybeSync};
 
@@ -158,6 +163,13 @@ impl fmt::Debug for TaskHandle {
             .field("armed", &self.abort.is_some())
             .finish()
     }
+}
+
+/// Injected async delay so a backoff loop takes no timer dependency: each
+/// caller supplies its platform sleep.
+pub trait Sleeper: MaybeSend + MaybeSync {
+    /// Complete after at least `dur` has elapsed.
+    fn sleep(&self, dur: Duration) -> impl Future<Output = ()> + MaybeSend;
 }
 
 #[cfg(test)]
