@@ -72,7 +72,7 @@ fn document() -> Document {
 }
 
 fn b32(value: &str) -> B256 {
-    B256::from_slice(&hex::decode(value).expect("corpus hex"))
+    value.parse().expect("corpus hex")
 }
 
 fn hashes(v: &[String]) -> [B256; 7] {
