@@ -2647,21 +2647,10 @@ name = "nectar-postage"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
  "arbitrary",
- "criterion",
- "derive_more",
- "k256",
+ "nectar-postage-primitives",
  "nectar-primitives",
  "nectar-testing",
- "proptest",
- "proptest-arbitrary-interop",
- "rand 0.10.1",
- "rayon",
- "serde",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -2687,6 +2676,28 @@ dependencies = [
  "rayon",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "nectar-postage-primitives"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "arbitrary",
+ "criterion",
+ "derive_more",
+ "k256",
+ "nectar-primitives",
+ "nectar-testing",
+ "proptest",
+ "proptest-arbitrary-interop",
+ "rand 0.10.1",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

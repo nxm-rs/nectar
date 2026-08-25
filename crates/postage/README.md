@@ -1,6 +1,8 @@
 # nectar-postage
 
-Postage stamp primitives for Ethereum Swarm: stamp and batch types, bucket math, and stamp verification (with optional parallel verification via rayon).
+The behaviour half of the Swarm postage domain: the stamped put seam (the `ChunkPut` sink for a paid chunk, with `StampIndifferent` bridging a plain chunk store into it) and the batch event surface.
+
+The data half (stamp and batch types, bucket math and stamp verification) lives in [nectar-postage-primitives](https://docs.rs/nectar-postage-primitives), which this crate re-exports at the original paths.
 
 Part of the [nectar](https://github.com/nxm-rs/nectar) workspace, a collection of low-level Ethereum Swarm primitives in Rust. See the [workspace README](https://github.com/nxm-rs/nectar) for the full crate list and project context.
 
@@ -11,15 +13,7 @@ Part of the [nectar](https://github.com/nxm-rs/nectar) workspace, a collection o
 nectar-postage = "0.1"
 ```
 
-This crate is `no_std` compatible (default features enable `std`).
-
-## The reference client's "envelope"
-
-The reference client calls a detached postage stamp an envelope.
-`POST /envelope/{address}` stamps one chunk against the batch named in the `swarm-postage-batch-id` header.
-The response carries the issuer address, the packed bucket and index, the timestamp and the signature.
-There is no Go type of that name; it is a route and a response name.
-`Stamp` in this crate is the stamp behind that response, field for field: batch, index, timestamp and signature.
+This crate is `no_std` compatible (default features enable `std` and the events module).
 
 ## License
 

@@ -34,12 +34,12 @@ jobs:
             - name: Check proving-lane crates without std
               run: |
                   # nectar-primitives-core: the chunk proofs a guest verifies.
-                  # nectar-postage: the stamps a guest verifies.
+                  # nectar-postage-primitives: the stamp data a guest verifies.
                   # nectar-spec: the network identity those proofs key on.
                   # nectar-marker: the bounds crate the other two name.
                   cargo check --locked \
                     -p nectar-primitives-core \
-                    -p nectar-postage -p nectar-spec -p nectar-marker \
+                    -p nectar-postage-primitives -p nectar-spec -p nectar-marker \
                     --no-default-features \
                     --target ${{ matrix.target }}
             # unsync: the !Send store's host shape, the rv64 lane standing in for the guest target.

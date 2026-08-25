@@ -8,7 +8,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
-description = "Postage stamp primitives for Ethereum Swarm"
+description = "The behaviour half of Swarm postage: the stamped put seam and the batch event surface"
 documentation = "https://docs.rs/nectar-postage"
 readme = "README.md"
 keywords = ["swarm", "ethereum", "postage", "no_std"]
@@ -18,70 +18,34 @@ categories = ["no-std", "data-structures"]
 workspace = true
 
 [dependencies]
+nectar-postage-primitives = { workspace = true }
 nectar-primitives = { workspace = true }
-alloy-primitives = { workspace = true, features = ["k256"] }
-derive_more = { workspace = true }
-thiserror = { workspace = true }
-
-# k256 with precomputed tables for faster ECDSA verification
-k256 = { workspace = true }
-
-# optional
-# The signer seam is issuing-side machinery; verification never signs, so the
-# generators are the only consumer.
-alloy-signer = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-rayon = { workspace = true, optional = true }
-arbitrary = { workspace = true, optional = true }
 
 [dev-dependencies]
-criterion = { workspace = true }
-proptest = { workspace = true }
-proptest-arbitrary-interop = { workspace = true }
-rand = { workspace = true }
-alloy-signer = { workspace = true }
-alloy-signer-local = { workspace = true }
-alloy-primitives = { workspace = true, features = ["getrandom", "arbitrary"] }
+alloy-primitives = { workspace = true }
 arbitrary = { workspace = true }
-nectar-primitives = { workspace = true, features = ["arbitrary"] }
-nectar-testing = { workspace = true, features = ["fixtures"] }
-serde = { workspace = true, features = ["derive", "std"] }
-serde_json = { workspace = true, features = ["std"] }
+nectar-postage-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-testing = { workspace = true }
 
 [features]
 default = [ "std" ]
 
 # Standard library support. Enables events.
-std = [
-	"alloy-primitives/std",
-	"k256/precomputed-tables",
-	"k256/std",
-	"nectar-primitives/std",
-	"serde?/std",
-	"thiserror/std",
-]
+std = [ "nectar-postage-primitives/std", "nectar-primitives/std" ]
 
 # Serialization support with serde.
-serde = [ "alloy-primitives/serde", "dep:serde", "nectar-primitives/serde" ]
+serde = [ "nectar-postage-primitives/serde", "nectar-primitives/serde" ]
 
 # Parallel verification using rayon (sync, CPU-bound).
-parallel = [ "dep:rayon", "std" ]
+parallel = [ "nectar-postage-primitives/parallel" ]
 
 # Arbitrary trait implementations and valid-by-construction generators for
 # property-based testing and fuzzing.
 arbitrary = [
-	"alloy-primitives/arbitrary",
-	"dep:alloy-signer",
-	"dep:arbitrary",
+	"nectar-postage-primitives/arbitrary",
 	"nectar-primitives/arbitrary",
-	"std",
 ]
-
-[[bench]]
-name = "verify"
-harness = false
-required-features = ["parallel"]
 
 [package.metadata.docs.rs]
 all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+rustdoc-args = [ "--cfg", "docsrs" ]

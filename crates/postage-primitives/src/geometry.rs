@@ -18,7 +18,7 @@ use crate::{StampError, StampIndex};
 /// A depth carries its network, so this does not compile:
 ///
 /// ```compile_fail
-/// use nectar_postage::{Batch, BatchId, BucketDepth};
+/// use nectar_postage_primitives::{Batch, BatchId, BucketDepth};
 /// use nectar_primitives::Testnet;
 ///
 /// let bucket_depth = BucketDepth::<Testnet>::new(16).unwrap();
@@ -426,7 +426,7 @@ impl<S: SwarmSpec> core::hash::Hash for BatchDepth<S> {
 /// # Example
 ///
 /// ```
-/// use nectar_postage::{BucketDepth, calculate_bucket};
+/// use nectar_postage_primitives::{BucketDepth, calculate_bucket};
 /// use nectar_primitives::{ChunkAddress, Mainnet};
 ///
 /// let address = ChunkAddress::new([0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);

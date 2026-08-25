@@ -57,7 +57,7 @@ impl ValidationState for Unvalidated {
 ///
 #[cfg_attr(feature = "serde", doc = "```compile_fail")]
 #[cfg_attr(not(feature = "serde"), doc = "```ignore")]
-/// use nectar_postage::{StampedAddress, Validated};
+/// use nectar_postage_primitives::{StampedAddress, Validated};
 ///
 /// fn de<T: serde::de::DeserializeOwned>() {}
 /// de::<StampedAddress<Validated>>();

@@ -491,7 +491,7 @@ impl ToWriter for Stamp {
 /// rejected at compile time:
 ///
 /// ```compile_fail
-/// use nectar_postage::{BatchId, StampDigest, StampIndex};
+/// use nectar_postage_primitives::{BatchId, StampDigest, StampIndex};
 /// use nectar_primitives::ChunkAddress;
 ///
 /// let _ = StampDigest::new(BatchId::ZERO, ChunkAddress::zero(), StampIndex::new(0, 0), 0);

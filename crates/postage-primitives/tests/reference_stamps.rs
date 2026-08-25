@@ -3,7 +3,7 @@
 #![allow(clippy::expect_used)]
 
 use alloy_primitives::{Address, hex, keccak256};
-use nectar_postage::{
+use nectar_postage_primitives::{
     BatchDepth, BatchId, BucketDepth, STAMP_SIZE, Stamp, StampDigest, StampError, calculate_bucket,
 };
 use nectar_primitives::{ChunkAddress, Mainnet};

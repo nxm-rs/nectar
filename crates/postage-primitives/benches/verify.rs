@@ -8,7 +8,7 @@ use alloy_primitives::{Address, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use nectar_postage::{
+use nectar_postage_primitives::{
     Batch, BatchId, BucketDepth, Stamp, StampBytes, StampDigest, StampIndex,
     parallel::{verify_stamps_parallel, verify_stamps_parallel_with_pubkey},
 };

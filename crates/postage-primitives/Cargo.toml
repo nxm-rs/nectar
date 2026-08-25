@@ -1,0 +1,87 @@
+[package]
+name = "nectar-postage-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Postage stamp data half: stamps, batches, bucket geometry and the stamped-address typestate"
+documentation = "https://docs.rs/nectar-postage-primitives"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "postage", "no_std"]
+categories = ["no-std", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-primitives = { workspace = true }
+alloy-primitives = { workspace = true, features = ["k256"] }
+derive_more = { workspace = true }
+thiserror = { workspace = true }
+
+# k256 with precomputed tables for faster ECDSA verification
+k256 = { workspace = true }
+
+# optional
+# The signer seam is issuing-side machinery; verification never signs, so the
+# generators are the only consumer.
+alloy-signer = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+arbitrary = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
+rand = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
+alloy-primitives = { workspace = true, features = ["getrandom", "arbitrary"] }
+arbitrary = { workspace = true }
+nectar-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-testing = { workspace = true, features = ["fixtures"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+
+[features]
+default = [ "std" ]
+
+# Standard library support.
+std = [
+	"alloy-primitives/std",
+	"k256/precomputed-tables",
+	"k256/std",
+	"nectar-primitives/std",
+	"serde?/std",
+	"thiserror/std",
+]
+
+# Serialization support with serde.
+serde = [ "alloy-primitives/serde", "dep:serde", "nectar-primitives/serde" ]
+
+# Parallel verification using rayon (sync, CPU-bound).
+parallel = [ "dep:rayon", "std" ]
+
+# Arbitrary trait implementations and valid-by-construction generators for
+# property-based testing and fuzzing.
+arbitrary = [
+	"alloy-primitives/arbitrary",
+	"dep:alloy-signer",
+	"dep:arbitrary",
+	"nectar-primitives/arbitrary",
+	"std",
+]
+
+[[bench]]
+name = "verify"
+harness = false
+required-features = [ "parallel" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [ "--cfg", "docsrs" ]
