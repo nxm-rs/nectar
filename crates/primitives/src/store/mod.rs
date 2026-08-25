@@ -16,7 +16,9 @@ pub use crate::marker::{MaybeSend, MaybeSync};
 pub use content::{ContentGet, ContentGetError};
 pub use memory::MemoryStore;
 #[cfg(feature = "std")]
-pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};
+pub use nectar_tasks::Sleeper;
+#[cfg(feature = "std")]
+pub use retry::{RetryConfig, RetryingChunkGet};
 pub use tee::{Tee, TeeError};
 pub use typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit, TrustedGet};
 pub use verify::{VerifyError, VerifyingStore};

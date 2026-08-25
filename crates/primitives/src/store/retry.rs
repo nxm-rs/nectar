@@ -12,19 +12,12 @@
 //! native, a browser timer on wasm) and nectar stays timer-agnostic.
 
 use std::fmt;
-use std::future::Future;
 use std::time::Duration;
 
 use super::typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit};
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry};
 use crate::marker::{MaybeSend, MaybeSync};
-
-/// Injected async delay so the decorator owns its timer: nectar takes no new
-/// timer dependency and each consumer supplies its platform sleep.
-pub trait Sleeper: MaybeSend + MaybeSync {
-    /// Complete after at least `dur` has elapsed.
-    fn sleep(&self, dur: Duration) -> impl Future<Output = ()> + MaybeSend;
-}
+use nectar_tasks::Sleeper;
 
 /// Retry budget and backoff shape for [`RetryingChunkGet`].
 #[derive(Clone, Copy, Debug)]
