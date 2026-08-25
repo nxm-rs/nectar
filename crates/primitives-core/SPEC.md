@@ -1,6 +1,6 @@
 # Spec references
 
-Source citations for the algorithms this crate ports from the reference client. Citations pin the reference client at `a17e3a9c` (master, 2025-12-26), except the overlay, network-identifier, kademlia, neighborhood-depth, single-owner-chunk and transformed-address sections, which pin tag `v2.8.1`. Line numbers are valid at the pinned revisions and may drift on later ones.
+Source citations for the algorithms this crate ports from the reference client. Citations pin the reference client at `a17e3a9c` (master, 2025-12-26), except the overlay, neighborhood-depth, single-owner-chunk and transformed-address sections, which pin tag `v2.8.1`. Line numbers are valid at the pinned revisions and may drift on later ones.
 
 Module docs link here instead of restating citations inline.
 
@@ -15,18 +15,6 @@ Module docs link here instead of restating citations inline.
 | Citation | Description |
 |---|---|
 | `pkg/crypto/crypto.go:45-57` | Overlay address is `keccak256(eth_address(20) \|\| network_id_le(8) \|\| nonce(32))`; the network id is little-endian in this hash. |
-
-## Network identifiers
-
-| Citation | Description |
-|---|---|
-| `pkg/config/chain.go` | Canonical network identifiers (mainnet `1`, testnet `10`). |
-
-## Kademlia parameters
-
-| Citation | Description |
-|---|---|
-| `pkg/topology/kademlia/kademlia.go:54-56` | Default saturation (8), over-saturation (18), and bootnode over-saturation (20) peer counts. |
 
 ## Neighborhood depth
 

@@ -71,6 +71,7 @@ nectar-mantaray = { version = "0.4.0", path = "crates/mantaray", default-feature
 nectar-marker = { version = "0.4.0", path = "crates/marker", default-features = false }
 nectar-primitives = { version = "0.4.0", path = "crates/primitives", default-features = false }
 nectar-primitives-core = { version = "0.4.0", path = "crates/primitives-core", default-features = false }
+nectar-spec = { version = "0.4.0", path = "crates/spec", default-features = false }
 nectar-tasks = { version = "0.4.0", path = "crates/tasks", default-features = false }
 nectar-postage = { version = "0.4.0", path = "crates/postage", default-features = false }
 nectar-postage-issuer = { version = "0.4.0", path = "crates/postage-issuer", default-features = false }

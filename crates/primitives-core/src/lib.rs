@@ -5,7 +5,8 @@
 //! and single-owner carriers with their acceptance rules, single-owner owner
 //! recovery, and the address, error and wire types those need. The routing
 //! predicates a storage proof asserts membership against live here with it,
-//! and the network identity types those predicates measure.
+//! keyed on the network identity from `nectar-spec`, which they re-export at
+//! their original paths.
 //!
 //! Storage and encryption live in `nectar-primitives`, which depends on this
 //! crate and re-exports every item at its original path.
@@ -59,7 +60,6 @@ use nectar_marker as _;
 pub use bytes;
 
 pub mod address;
-pub mod bin;
 pub mod bmt;
 pub(crate) mod cache;
 pub mod chunk;
@@ -67,15 +67,15 @@ pub mod error;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod generators;
 pub mod neighborhood_depth;
-pub mod network_id;
 pub mod nonce;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod oracles;
 pub mod overlay;
-pub mod proximity_order;
-pub mod spec;
 pub mod wire;
 pub mod xor_metric;
+
+// The network identity, re-exported at its original paths.
+pub use nectar_spec::{bin, network_id, proximity_order, spec};
 
 /// Explicit-cast helpers shared with `nectar-primitives`. Not part of the
 /// supported surface.
@@ -128,15 +128,17 @@ pub use chunk::{
     Verified,
 };
 
-// Routing predicates and network identity
+// Routing predicates
 pub use address::OverlayAddress;
-pub use bin::{Bin, BinError};
 pub use neighborhood_depth::recompute_neighborhood_depth;
-pub use network_id::NetworkId;
 pub use overlay::compute_overlay;
-pub use proximity_order::{ProximityOrder, ProximityOrderError};
-pub use spec::{Mainnet, NamedSwarm, Swarm, SwarmKind, SwarmSpec, Testnet};
-pub use xor_metric::{MAX_PO, XorMetric};
+pub use xor_metric::XorMetric;
+
+// Network identity, re-exported from nectar-spec at its original paths
+pub use nectar_spec::{
+    Bin, BinError, MAX_PO, Mainnet, NamedSwarm, NetworkId, ProximityOrder, ProximityOrderError,
+    Swarm, SwarmKind, SwarmSpec, Testnet,
+};
 
 /// Default BMT hasher.
 pub type DefaultHasher = Hasher<DEFAULT_BODY_SIZE>;

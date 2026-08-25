@@ -1,7 +1,8 @@
 //! Typed Kademlia proximity order (PO) in the range `0..=MAX_PO`.
 //!
-//! See [`MAX_PO`] for the standard cap (31) and
-//! [`xor_metric`](crate::xor_metric) for the derivation from two address-space points.
+//! See [`MAX_PO`] for the standard cap (31); the derivation from two
+//! address-space points is the `XorMetric` trait of the
+//! `nectar-primitives-core` crate.
 
 use crate::MAX_PO;
 use derive_more::{Display, Into};
@@ -42,12 +43,11 @@ impl ProximityOrder {
     /// The largest proximity order ([`MAX_PO`] = 31).
     pub const MAX: Self = Self(MAX_PO);
 
-    /// Construct without bounds checking. Caller must ensure `raw <= MAX_PO`.
-    ///
-    /// Used by internal code that already validated the range (e.g.
-    /// `XorMetric::proximity`, which can never exceed `MAX_PO`).
+    /// Construct without bounds checking. Caller must ensure `raw <= MAX_PO`;
+    /// a range-valid input is a valid proximity order, so the unchecked form
+    /// is sound (e.g. `XorMetric::proximity` caps at `MAX_PO`).
     #[inline]
-    pub(crate) const fn new_unchecked(raw: u8) -> Self {
+    pub const fn new_unchecked(raw: u8) -> Self {
         debug_assert!(raw <= MAX_PO);
         Self(raw)
     }

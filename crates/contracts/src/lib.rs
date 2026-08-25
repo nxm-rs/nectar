@@ -114,6 +114,50 @@ define_deployment!(
     SwapPriceOracle
 );
 
+// Deployment Extension Trait
+
+/// A swarm's storage-incentive contract deployments.
+///
+/// An extension of a spec marker type, keyed by the specification that owns
+/// the deployment, so code generic over [`nectar_spec::SwarmSpec`] reaches a
+/// swarm's contract addresses and deploy blocks.
+pub trait Deployment: nectar_spec::SwarmSpec {
+    /// The BZZ token deployment.
+    const BZZ_TOKEN: Token;
+    /// The postage stamp contract deployment.
+    const POSTAGE_STAMP: PostageStamp;
+    /// The stake registry deployment.
+    const STAKING: StakeRegistry;
+    /// The redistribution contract deployment.
+    const REDISTRIBUTION: Redistribution;
+    /// The storage price oracle deployment.
+    const STORAGE_PRICE_ORACLE: StoragePriceOracle;
+    /// The chequebook factory deployment.
+    const CHEQUEBOOK_FACTORY: ChequebookFactory;
+    /// The swap price oracle deployment.
+    const SWAP_PRICE_ORACLE: SwapPriceOracle;
+}
+
+impl Deployment for nectar_spec::Mainnet {
+    const BZZ_TOKEN: Token = mainnet::BZZ_TOKEN;
+    const POSTAGE_STAMP: PostageStamp = mainnet::POSTAGE_STAMP;
+    const STAKING: StakeRegistry = mainnet::STAKING;
+    const REDISTRIBUTION: Redistribution = mainnet::REDISTRIBUTION;
+    const STORAGE_PRICE_ORACLE: StoragePriceOracle = mainnet::STORAGE_PRICE_ORACLE;
+    const CHEQUEBOOK_FACTORY: ChequebookFactory = mainnet::CHEQUEBOOK_FACTORY;
+    const SWAP_PRICE_ORACLE: SwapPriceOracle = mainnet::SWAP_PRICE_ORACLE;
+}
+
+impl Deployment for nectar_spec::Testnet {
+    const BZZ_TOKEN: Token = testnet::BZZ_TOKEN;
+    const POSTAGE_STAMP: PostageStamp = testnet::POSTAGE_STAMP;
+    const STAKING: StakeRegistry = testnet::STAKING;
+    const REDISTRIBUTION: Redistribution = testnet::REDISTRIBUTION;
+    const STORAGE_PRICE_ORACLE: StoragePriceOracle = testnet::STORAGE_PRICE_ORACLE;
+    const CHEQUEBOOK_FACTORY: ChequebookFactory = testnet::CHEQUEBOOK_FACTORY;
+    const SWAP_PRICE_ORACLE: SwapPriceOracle = testnet::SWAP_PRICE_ORACLE;
+}
+
 // Token Interface
 
 sol! {
@@ -481,6 +525,49 @@ mod tests {
         assert_ne!(testnet::STORAGE_PRICE_ORACLE.address, Address::ZERO);
         assert_ne!(testnet::CHEQUEBOOK_FACTORY.address, Address::ZERO);
         assert_ne!(testnet::SWAP_PRICE_ORACLE.address, Address::ZERO);
+    }
+
+    #[test]
+    fn deployment_keys_track_the_chain_modules() {
+        assert_eq!(nectar_spec::Mainnet::BZZ_TOKEN, mainnet::BZZ_TOKEN);
+        assert_eq!(nectar_spec::Mainnet::POSTAGE_STAMP, mainnet::POSTAGE_STAMP);
+        assert_eq!(nectar_spec::Mainnet::STAKING, mainnet::STAKING);
+        assert_eq!(
+            nectar_spec::Mainnet::REDISTRIBUTION,
+            mainnet::REDISTRIBUTION
+        );
+        assert_eq!(
+            nectar_spec::Mainnet::STORAGE_PRICE_ORACLE,
+            mainnet::STORAGE_PRICE_ORACLE
+        );
+        assert_eq!(
+            nectar_spec::Mainnet::CHEQUEBOOK_FACTORY,
+            mainnet::CHEQUEBOOK_FACTORY
+        );
+        assert_eq!(
+            nectar_spec::Mainnet::SWAP_PRICE_ORACLE,
+            mainnet::SWAP_PRICE_ORACLE
+        );
+
+        assert_eq!(nectar_spec::Testnet::BZZ_TOKEN, testnet::BZZ_TOKEN);
+        assert_eq!(nectar_spec::Testnet::POSTAGE_STAMP, testnet::POSTAGE_STAMP);
+        assert_eq!(nectar_spec::Testnet::STAKING, testnet::STAKING);
+        assert_eq!(
+            nectar_spec::Testnet::REDISTRIBUTION,
+            testnet::REDISTRIBUTION
+        );
+        assert_eq!(
+            nectar_spec::Testnet::STORAGE_PRICE_ORACLE,
+            testnet::STORAGE_PRICE_ORACLE
+        );
+        assert_eq!(
+            nectar_spec::Testnet::CHEQUEBOOK_FACTORY,
+            testnet::CHEQUEBOOK_FACTORY
+        );
+        assert_eq!(
+            nectar_spec::Testnet::SWAP_PRICE_ORACLE,
+            testnet::SWAP_PRICE_ORACLE
+        );
     }
 
     /// Vector provenance: generated, keccak-256 over the verbatim event

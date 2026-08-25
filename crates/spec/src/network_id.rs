@@ -1,12 +1,11 @@
 //! Typed Swarm network identifier.
 //!
-//! [`NetworkId`] is mixed into the overlay address (see [`compute_overlay`])
-//! so that a single keypair derives a different overlay on each network.
-//! This is the Swarm-wide partitioning mechanism inherited from the reference
-//! client (derivation: `SPEC.md#overlay-derivation`; canonical IDs:
+//! [`NetworkId`] is mixed into the overlay address of the
+//! `nectar-primitives-core` crate so that a single keypair derives a
+//! different overlay on each network. This is the Swarm-wide partitioning
+//! mechanism inherited from the reference client (overlay derivation in
+//! `nectar-primitives-core`'s `SPEC.md`; canonical IDs:
 //! `SPEC.md#network-identifiers`).
-//!
-//! [`compute_overlay`]: crate::compute_overlay
 
 use derive_more::{Display, From, Into};
 
@@ -39,15 +38,15 @@ impl NetworkId {
         self.0
     }
 
-    /// Eight-byte little-endian representation (used in
-    /// [`compute_overlay`](crate::compute_overlay), see `SPEC.md#overlay-derivation`).
+    /// Eight-byte little-endian representation (mixed into the overlay address
+    /// of the `nectar-primitives-core` crate, see its `SPEC.md#overlay-derivation`).
     #[inline]
     pub const fn to_le_bytes(self) -> [u8; 8] {
         self.0.to_le_bytes()
     }
 
-    /// Eight-byte big-endian representation (used in the BzzAddress sign-data,
-    /// see `SPEC.md#handshake-sign-data`).
+    /// Eight-byte big-endian representation (used in the BzzAddress sign-data
+    /// of the `nectar-primitives` crate, see its `SPEC.md#handshake-sign-data`).
     #[inline]
     pub const fn to_be_bytes(self) -> [u8; 8] {
         self.0.to_be_bytes()

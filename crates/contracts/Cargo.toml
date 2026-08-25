@@ -18,6 +18,9 @@ categories = ["no-std", "data-structures"]
 workspace = true
 
 [dependencies]
+# nectar
+nectar-spec = { workspace = true }
+
 # alloy
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
@@ -27,8 +30,13 @@ serde = { workspace = true, optional = true }
 
 [features]
 default = [ "std" ]
-std = [ "alloy-primitives/std", "alloy-sol-types/std", "serde?/std" ]
-serde = [ "alloy-primitives/serde", "dep:serde" ]
+std = [
+	"alloy-primitives/std",
+	"alloy-sol-types/std",
+	"nectar-spec/std",
+	"serde?/std",
+]
+serde = [ "alloy-primitives/serde", "dep:serde", "nectar-spec/serde" ]
 
 [package.metadata.docs.rs]
 all-features = true

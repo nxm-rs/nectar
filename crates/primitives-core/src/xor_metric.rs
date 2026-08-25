@@ -40,14 +40,7 @@ use core::cmp::Ordering;
 
 use alloy_primitives::U256;
 
-use crate::{Bin, ChunkAddress, ProximityOrder, SwarmSpec};
-
-/// Maximum proximity order for standard routing operations.
-///
-/// Value 31 gives 32 Kademlia bins (0-31). The protocol ceiling that
-/// [`ProximityOrder`] and [`Bin`] validate against; spec methods narrow
-/// below it per network.
-pub const MAX_PO: u8 = 31;
+use crate::{Bin, ChunkAddress, MAX_PO, ProximityOrder, SwarmSpec};
 
 /// XOR-metric operations over a 32-byte point.
 ///

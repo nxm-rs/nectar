@@ -89,6 +89,7 @@ pub use chunk::{ChunkEncrypt, EncryptedContentChunk};
 pub use address::OverlayAddress;
 pub use bin::{Bin, BinError};
 pub use error::{PrimitivesError, Result, WrongLength};
+pub use nectar_primitives_core::MAX_PO;
 pub use neighborhood_depth::recompute_neighborhood_depth;
 pub use network_id::NetworkId;
 pub use nonce::Nonce;
@@ -96,7 +97,7 @@ pub use overlay::compute_overlay;
 pub use proximity_order::{ProximityOrder, ProximityOrderError};
 pub use spec::{Mainnet, NamedSwarm, Swarm, SwarmKind, SwarmSpec, Testnet};
 pub use timestamp::{Timestamp, TimestampError};
-pub use xor_metric::{MAX_PO, XorMetric};
+pub use xor_metric::XorMetric;
 
 // Core BMT functionality
 pub use bmt::{Hasher, HasherFactory, Proof, Prover};
