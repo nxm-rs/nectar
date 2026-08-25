@@ -1,10 +1,8 @@
 //! The `SwarmPrimitives` bundle.
 //!
 //! The bundle a generic parameter names when it would otherwise name the
-//! network specification and the chunk body size apart. It is a methodless
-//! associated-type-and-constant trait in the shape of the node primitive
-//! bundles of the Ethereum Rust toolchain: a marker a type carries, not a
-//! value a runtime builds.
+//! network specification and the chunk body size apart. It is methodless:
+//! a marker a type carries, not a value a runtime builds.
 
 use core::fmt;
 
