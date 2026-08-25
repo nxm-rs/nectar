@@ -6,7 +6,7 @@
 //!
 //! # Core Types
 //!
-//! - [`Authenticate`]: The seam a descent proof verifies against
+//! - [`Verifier`]: The seam descent proofs verify against
 //! - [`Segment`]: The chunk segment kind, replaying the BMT segment proof
 //!   from `nectar-primitives` to the chunk root
 //!
@@ -34,5 +34,5 @@
 pub mod auth;
 pub mod segment;
 
-pub use crate::auth::Authenticate;
+pub use crate::auth::Verifier;
 pub use crate::segment::Segment;

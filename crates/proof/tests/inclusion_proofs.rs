@@ -13,7 +13,7 @@
 #![allow(clippy::expect_used)]
 
 use alloy_primitives::{B256, hex, keccak256};
-use nectar_proof::{Authenticate, Segment};
+use nectar_proof::{Segment, Verifier};
 use serde::Deserialize;
 
 const DOCUMENT: &str =

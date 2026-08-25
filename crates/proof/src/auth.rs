@@ -2,16 +2,16 @@
 
 use alloy_primitives::B256;
 
-/// The authentication layer a descent proof verifies against.
+/// The descent-proof verifier.
 ///
 /// A descent proof walks one path of steps, each binding the bytes it
 /// carries to the address that step owns, and lands on a trusted address.
 /// The replay borrows its inputs and allocates nothing, which keeps it
 /// allocation-free in a guest.
 ///
-/// The layer carries no key vocabulary, no content verdict and no span
+/// The verifier carries no key vocabulary, no content verdict and no span
 /// arithmetic: a step that does not bind makes the replay report false.
-pub trait Authenticate {
+pub trait Verifier {
     /// The proof the replay walks.
     type Proof: ?Sized;
 

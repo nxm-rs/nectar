@@ -4,7 +4,7 @@ use alloy_primitives::B256;
 
 use nectar_primitives::bmt::Proof;
 
-use crate::auth::Authenticate;
+use crate::auth::Verifier;
 
 /// The chunk segment proof kind.
 ///
@@ -14,7 +14,7 @@ use crate::auth::Authenticate;
 #[derive(Debug)]
 pub struct Segment;
 
-impl Authenticate for Segment {
+impl Verifier for Segment {
     type Proof = Proof;
 
     fn verify(trusted: &B256, proof: &Self::Proof) -> bool {
