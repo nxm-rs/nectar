@@ -24,7 +24,7 @@ use crate::xor_metric::XorMetric;
 /// is rejected where an `OverlayAddress` is expected.
 ///
 /// ```compile_fail
-/// use nectar_primitives::{ChunkAddress, OverlayAddress};
+/// use nectar_primitives_core::{ChunkAddress, OverlayAddress};
 ///
 /// fn route_to(_addr: OverlayAddress) {}
 /// route_to(ChunkAddress::zero());
@@ -117,6 +117,7 @@ impl<'a> arbitrary::Arbitrary<'a> for OverlayAddress {
 mod tests {
     use super::*;
     use crate::error::PrimitivesError;
+    use std::format;
 
     #[test]
     fn zero_is_all_zero_bytes() {

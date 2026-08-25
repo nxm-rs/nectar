@@ -64,6 +64,7 @@ impl<'a> arbitrary::Arbitrary<'a> for NetworkId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
 
     #[test]
     fn canonical_ids() {

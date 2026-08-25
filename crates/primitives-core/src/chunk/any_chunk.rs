@@ -413,14 +413,14 @@ mod tests {
         assert_eq!(any.type_id(), cloned.type_id());
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     fn test_signer() -> alloy_signer_local::PrivateKeySigner {
         // Fixed key so addresses are deterministic across runs.
         let pk = [0x42u8; 32];
         alloy_signer_local::PrivateKeySigner::from_slice(&pk).unwrap()
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     fn sample_single_owner() -> DefaultSingleOwnerChunk {
         let id = crate::SocId::ZERO;
         DefaultSingleOwnerChunk::new(id, b"single owner payload".to_vec(), &test_signer()).unwrap()
@@ -435,7 +435,7 @@ mod tests {
     }
 
     /// A single-owner chunk recovers the signer through the same delegation.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn chunk_ops_owner_recovers_the_signer() {
         let soc = sample_single_owner();
@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(decoded.data(), any.data());
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn test_typed_single_owner_round_trip() {
         let soc = sample_single_owner();
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(decoded.into_bytes(), wire);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn test_from_wire_bytes_single_owner_round_trip() {
         let soc = sample_single_owner();
@@ -634,7 +634,7 @@ mod tests {
     /// signed by the public replica key over a non-conforming id commits to
     /// a real replica address, and a bare address compare would mint
     /// arbitrary content there. The replica pin must reject it.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn test_from_wire_bytes_rejects_nonconforming_replica_id() {
         use super::super::single_owner::DISPERSED_REPLICA_OWNER_PK;
@@ -665,7 +665,7 @@ mod tests {
     /// A garbage signature commits under the zero owner; asking the wire
     /// path about exactly that address must still fail, where a bare
     /// address compare would lie its way through.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn test_from_wire_bytes_rejects_garbage_signature_at_committed_address() {
         let soc = sample_single_owner();

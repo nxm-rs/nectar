@@ -59,9 +59,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84e0378e959aa6a885897522080a990e80eb317f1e9a222a604492ea50e13096"
 dependencies = [
  "alloy-primitives",
- "arbitrary",
  "num_enum",
- "proptest",
  "serde",
  "strum 0.27.2",
 ]
@@ -2712,7 +2710,6 @@ dependencies = [
 name = "nectar-primitives"
 version = "0.4.0"
 dependencies = [
- "alloy-chains",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
@@ -2730,14 +2727,12 @@ dependencies = [
  "nectar-primitives-core",
  "nectar-tasks",
  "nectar-testing",
- "num_enum",
  "parking_lot",
  "proptest",
  "proptest-arbitrary-interop",
  "rand 0.10.1",
  "serde",
  "serde_json",
- "strum 0.28.0",
  "subtle",
  "thiserror",
  "web-time",
@@ -2748,6 +2743,7 @@ dependencies = [
 name = "nectar-primitives-core"
 version = "0.4.0"
 dependencies = [
+ "alloy-chains",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
@@ -2761,12 +2757,14 @@ dependencies = [
  "keccak-batch",
  "nectar-marker",
  "nectar-testing",
+ "num_enum",
  "once_cell",
  "proptest",
  "proptest-arbitrary-interop",
  "rand 0.10.1",
  "rayon",
  "serde",
+ "strum 0.28.0",
  "thiserror",
  "wasm-bindgen-test",
 ]

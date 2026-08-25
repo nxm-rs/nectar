@@ -200,6 +200,7 @@ impl Swarm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::string::ToString;
 
     #[test]
     fn test_id() {

@@ -4,9 +4,10 @@
 //! storage system, including chunk types, address calculations, and binary merkle trees.
 //!
 //! The chunk-verification subset (the binary merkle tree, the chunk carriers
-//! and their acceptance rules, and the types those need) lives in
-//! [`nectar_primitives_core`] and is re-exported here at its original paths;
-//! storage, encryption and the routing metrics are this crate's own.
+//! and their acceptance rules, the routing predicates and the network
+//! identity types those need) lives in [`nectar_primitives_core`] and is
+//! re-exported here at its original paths; storage and encryption are this
+//! crate's own.
 //!
 //! ## Key Components
 //!
@@ -60,26 +61,21 @@ pub use bytes;
 
 // The verification core, re-exported module by module so every path a
 // consumer imported before the carve still resolves.
-pub use nectar_primitives_core::{error, nonce, wire};
+pub use nectar_primitives_core::{
+    address, bin, error, neighborhood_depth, network_id, nonce, overlay, proximity_order, spec,
+    wire, xor_metric,
+};
 #[cfg(any(test, feature = "arbitrary"))]
 pub use nectar_primitives_core::{generators, oracles};
 
-pub mod address;
-pub mod bin;
 pub mod bmt;
 pub mod chunk;
 pub mod entry_ref;
 pub mod marker;
-pub mod neighborhood_depth;
-pub mod network_id;
-pub mod overlay;
-pub mod proximity_order;
 pub mod signing;
 pub mod sink;
-pub mod spec;
 pub mod store;
 pub mod timestamp;
-pub mod xor_metric;
 
 // Re-export core constants
 pub use bmt::DEFAULT_BODY_SIZE;

@@ -108,6 +108,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Bin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
 
     #[test]
     fn min_max_count() {

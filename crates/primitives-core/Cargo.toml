@@ -21,12 +21,16 @@ workspace = true
 # nectar
 nectar-marker.workspace = true
 
+## chain
+# The settlement chain a named swarm runs on.
+alloy-chains = { workspace = true }
+
 ## alloy crypto
 # Signature recovery (k256) is part of the bare-metal verify closure; the
 # asm-keccak and getrandom extras ride the target tables below.
 alloy-primitives = { workspace = true, features = ["k256"] }
-# Signing is not part of the verify closure: both ride the `std` feature so a
-# guest never links them.
+# Signing is not part of the verify closure: both ride the `sign` feature so a
+# verify-only build never links them.
 alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 
@@ -36,8 +40,10 @@ hybrid-array.workspace = true
 k256.workspace = true
 keccak-batch = { workspace = true, optional = true }
 
-# derive macros
+## derive macros
 derive_more.workspace = true
+num_enum.workspace = true
+strum.workspace = true
 
 # Core dependencies
 bytes.workspace = true
@@ -77,17 +83,20 @@ proptest-arbitrary-interop.workspace = true
 rand.workspace = true
 
 [features]
-default = [ "std" ]
+default = [ "sign", "std" ]
 std = [
-	"dep:alloy-signer",
-	"dep:alloy-signer-local",
+	"alloy-chains/std",
 	"dep:keccak-batch",
 	"dep:rayon",
 	"k256/precomputed-tables",
 	"k256/std",
+	"strum/std",
 ]
+# The signer stack: signing is not part of the verify closure, so it rides a
+# feature of its own that a verify-only build never enables.
+sign = [ "dep:alloy-signer", "dep:alloy-signer-local", "std" ]
 serde = [ "dep:serde" ]
-arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "std" ]
+arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "sign" ]
 # Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
 # the wasm32 relaxation of the boxed store-error aliases on any target, and
 # forwards to nectar-marker so the MaybeSend/MaybeSync bounds in

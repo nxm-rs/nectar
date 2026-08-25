@@ -27,9 +27,6 @@ nectar-primitives-core.workspace = true
 # The retry decorator re-exports the tasks delay seam under `std`.
 nectar-tasks = { workspace = true, optional = true }
 
-# The settlement chain a named swarm runs on.
-alloy-chains = { workspace = true }
-
 ## alloy crypto
 # Base set: signature recovery (k256) stays in the bare-metal core; the
 # asm-keccak and getrandom extras ride the target tables below.
@@ -37,8 +34,6 @@ alloy-primitives = { workspace = true, features = ["k256"] }
 
 # derive macros
 derive_more.workspace = true
-num_enum.workspace = true
-strum.workspace = true
 
 # Core dependencies
 bytes.workspace = true
@@ -98,17 +93,15 @@ serde_json = { workspace = true, features = ["std"] }
 [features]
 default = [ "std" ]
 std = [
-	"alloy-chains/std",
 	"dep:parking_lot",
 	"dep:web-time",
 	"nectar-clock/std",
+	"nectar-primitives-core/sign",
 	"nectar-primitives-core/std",
 	"nectar-tasks/std",
-	"strum/std",
 ]
-serde = [ "alloy-chains/serde", "dep:serde", "nectar-primitives-core/serde" ]
+serde = [ "dep:serde", "nectar-primitives-core/serde" ]
 arbitrary = [
-	"alloy-chains/arbitrary",
 	"alloy-primitives/arbitrary",
 	"dep:arbitrary",
 	"dep:rand",
