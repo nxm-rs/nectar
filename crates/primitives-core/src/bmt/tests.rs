@@ -272,7 +272,7 @@ fn test_prefix_proof_roundtrip() {
 
     for seg in [0usize, 1, 63, 127] {
         let proof = hasher.generate_proof(&payload, seg).unwrap();
-        assert_eq!(proof.prefix.as_deref(), Some(ANCHOR));
+        assert_eq!(proof.prefix, B256::from_slice(ANCHOR));
         assert!(
             DefaultHasher::verify_proof(&proof, &root).unwrap(),
             "prefixed proof for segment {seg} must verify against the prefixed root"
@@ -288,6 +288,26 @@ fn test_prefix_proof_roundtrip() {
             "prefixed proof must not verify against the plain root"
         );
     }
+}
+
+/// A hasher prefix that is neither empty nor a 32-byte anchor cannot name a
+/// proof, so generation answers the typed anchor error.
+#[test]
+fn test_proof_rejects_an_unanchored_prefix() {
+    const SHORT_ANCHOR: &[u8] = b"short-";
+
+    let payload: Vec<u8> = (0..DEFAULT_BODY_SIZE).map(|i| (i % 256) as u8).collect();
+    let mut hasher = DefaultHasher::with_prefix(SHORT_ANCHOR);
+    hasher.set_span(DEFAULT_BODY_SIZE as u64);
+    hasher.update(&payload);
+
+    let err = hasher
+        .generate_proof(&payload, 0)
+        .expect_err("a non-anchor prefix cannot name a proof");
+    assert!(matches!(
+        err,
+        crate::error::PrimitivesError::Bmt(crate::bmt::error::BmtError::AnchorPrefix { len: 6 })
+    ));
 }
 
 /// Differential gate for the two hash-pair steps: the batched `std` step and

@@ -5,7 +5,9 @@
 //! `pkg/storageincentives/testdata/inclusion-proofs.json` (the
 //! TestMakeInclusionProofsRegression test). Its provenance is recorded in
 //! `tools/stamp-vectors/README.md`. The sample chunk address is the value
-//! that test pins.
+//! that test pins. The anchored arm of that test ran with a one-byte anchor,
+//! which `Proof` no longer names; the anchored proofs of the same corpus run
+//! against the 32-byte anchor document in `crates/proof/tests`.
 
 #![allow(clippy::expect_used)]
 
@@ -20,10 +22,8 @@ const SAMPLE_CHUNK_ADDRESS: &str =
     "0xb012904b0c3e6462158b4416556caa888031a79bad46d2ffa7012408c9c38aa8";
 // The sample span: 16 items of (address || transformed address), 64 bytes each.
 const SAMPLE_SPAN: u64 = 1024;
-// The level-two and three segment index, from the upstream test's anchor byte.
+// The level-two segment index, from the upstream test's anchor byte.
 const WITNESS_SEGMENT_INDEX: usize = 30;
-// The upstream anchor1 (big.NewInt(100).Bytes()) for the level-three proofs.
-const ANCHOR: u8 = 0x64;
 
 #[derive(Deserialize)]
 struct Document {
@@ -41,7 +41,6 @@ struct ProofVector {
     proof_segments2: [String; 7],
     prove_segment2: String,
     chunk_span: u64,
-    proof_segments3: [String; 7],
     soc_proof: Vec<SocVector>,
 }
 
@@ -67,7 +66,7 @@ fn level_one(v: &ProofVector, segment_index: usize) -> Proof {
         b32(&v.prove_segment),
         v.proof_segments.to_owned().map(|s| b32(&s)),
         SAMPLE_SPAN,
-        None,
+        B256::ZERO,
     )
 }
 
@@ -77,17 +76,7 @@ fn level_two(v: &ProofVector) -> Proof {
         b32(&v.prove_segment2),
         v.proof_segments2.to_owned().map(|s| b32(&s)),
         v.chunk_span,
-        None,
-    )
-}
-
-fn level_three(v: &ProofVector) -> Proof {
-    Proof::new(
-        WITNESS_SEGMENT_INDEX,
-        b32(&v.prove_segment2),
-        v.proof_segments3.to_owned().map(|s| b32(&s)),
-        v.chunk_span,
-        Some(vec![ANCHOR]),
+        B256::ZERO,
     )
 }
 
@@ -155,52 +144,6 @@ fn proof_last_level_two_verifies_at_the_embedded_witness_address() {
     assert!(
         level_two(v).verify(&root).expect("verifies"),
         "proofLast level 2: the embedded witness address"
-    );
-}
-
-#[test]
-fn proof1_level_three_verifies_at_the_transformed_address() {
-    let v = &document().proof1;
-    // The level-1 sibling of the sample leaf is the item's transformed address.
-    let root = b32(v.proof_segments.first().expect("sibling present"));
-    assert!(
-        level_three(v).verify(&root).expect("verifies"),
-        "proof1 level 3: the transformed address"
-    );
-}
-
-#[test]
-fn proof2_level_three_verifies_at_the_wrapped_chunk_transformed() {
-    use nectar_primitives::chunk::{ChunkOps, ContentChunk};
-
-    let v = &document().proof2;
-    // The upstream test constructs the witness content; the corpus identifier
-    // names the construction nectar re-derives here.
-    let soc = v
-        .soc_proof
-        .first()
-        .expect("proof2 carries a single-owner proof");
-    let n = (1..=16u32)
-        .find(|n| keccak256(format!("ID #{n}").as_bytes()) == b32(&soc.identifier))
-        .expect("the identifier names the upstream construction");
-    let content = format!("Unstoppable data! Chunk #{n}");
-    let inner: ContentChunk = ContentChunk::new(content).expect("content chunk");
-    // The sample stores the single-owner sealed transform, so the reference
-    // client's anchor proof runs over the stored content instead.
-    let root = B256::from_slice(inner.transformed_address(&[ANCHOR]).as_bytes());
-    assert!(
-        level_three(v).verify(&root).expect("verifies"),
-        "proof2 level 3: the wrapped chunk's transformed address"
-    );
-}
-
-#[test]
-fn proof_last_level_three_verifies_at_the_transformed_address() {
-    let v = &document().proof_last;
-    let root = b32(v.proof_segments.first().expect("sibling present"));
-    assert!(
-        level_three(v).verify(&root).expect("verifies"),
-        "proofLast level 3: the transformed address"
     );
 }
 

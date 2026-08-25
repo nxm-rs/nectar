@@ -6,8 +6,10 @@ The expected bytes must come from the reference client, not from nectar, or the 
 No golden stamp vectors exist upstream to port: the reference client's stamp tests generate a key at random and round-trip against themselves.
 So this program links the reference client's `pkg/postage` and emits what it produces.
 
-Three arms:
+Four arms:
 
+- `anchor32`, the inclusion-proof construction re-run with a fixed 32-byte anchor in place of the regression test's one-byte anchor (`testdata/inclusion-proofs-anchor32.json`, committed output for the `nectar-proof` crate's segment authenticator).
+  The witness content is the same literal chunks the regression test builds, and every emitted proof self-verifies with the reference client's own `bmt Prover.Verify` before the file is written.
 - `corpus`, the three stamps inside the reference client's committed inclusion-proof regression data (`pkg/storageincentives/testdata/inclusion-proofs.json`, copied verbatim to `testdata/`).
   Signing is re-run here from the same inputs `pkg/storageincentives/proof_test.go` uses, and the program fails unless every signature reproduces the committed bytes.
   Those stamps sign a literal index, so their bucket is 0.
