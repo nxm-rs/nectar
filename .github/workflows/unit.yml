@@ -143,10 +143,17 @@ jobs:
                     --no-tests=warn --no-fail-fast
             # The serde impls (and the bounded-newtype guards on their decode
             # path) are off the default build; cover their tests here.
-            - name: Run postage serde tests
+            - name: Run postage-primitives serde tests
               run: |
                   cargo nextest run \
-                    -p nectar-postage --features serde --locked \
+                    -p nectar-postage-primitives --features serde --locked \
+                    --no-tests=warn --no-fail-fast
+            # The parallel verifier sits behind the parallel feature, outside
+            # the default-features pass above.
+            - name: Run postage-primitives parallel tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-postage-primitives --features parallel --locked \
                     --no-tests=warn --no-fail-fast
             # The pipeline's parallel engine sits behind the parallel
             # feature, outside the default-features pass above.

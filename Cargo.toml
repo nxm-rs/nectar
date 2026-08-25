@@ -75,6 +75,7 @@ nectar-spec = { version = "0.4.0", path = "crates/spec", default-features = fals
 nectar-tasks = { version = "0.4.0", path = "crates/tasks", default-features = false }
 nectar-postage = { version = "0.4.0", path = "crates/postage", default-features = false }
 nectar-postage-issuer = { version = "0.4.0", path = "crates/postage-issuer", default-features = false }
+nectar-postage-primitives = { version = "0.4.0", path = "crates/postage-primitives", default-features = false }
 nectar-postage-usage = { version = "0.4.0", path = "crates/postage-usage", default-features = false }
 nectar-testing = { path = "crates/testing", default-features = false }
 

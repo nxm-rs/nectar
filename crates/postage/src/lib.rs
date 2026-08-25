@@ -1,27 +1,13 @@
-//! Postage stamp primitives for Ethereum Swarm.
+//! The behaviour half of the postage domain.
 //!
-//! This crate provides the core types and traits for postage stamps in the Swarm network.
-//! It is optimized for verification use cases (such as `vertex` nodes).
+//! The data half (stamps, batches, bucket geometry, the stamped-address
+//! typestate and the stamp-to-address signature recovery) lives in
+//! [nectar-postage-primitives](https://docs.rs/nectar-postage-primitives);
+//! this crate re-exports it at the original paths and adds the store-backed
+//! put seam and the event surface.
 //!
 //! For stamp issuing and signing, use the
 //! [`nectar-postage-issuer`](https://docs.rs/nectar-postage-issuer) crate.
-//!
-//! # Core Types
-//!
-//! - [`Batch`]: A postage batch representing prepaid storage
-//! - [`BucketDepth`]: A collision-bucket depth a network accepts, checked
-//!   against the [`SwarmSpec`](nectar_primitives::SwarmSpec) it is built for
-//! - [`Bucket`]: A collision bucket carrying the depth that cut it
-//! - [`BatchDepth`]: A batch depth carrying the bucket depth beneath it
-//! - [`Stamp`]: A postage stamp proving payment for chunk storage
-//! - [`StampIndex`]: The bucket and position index within a stamp
-//! - [`StampDigest`]: The data to be signed when creating a stamp
-//! - [`StampedAddress`]: A stamp bound to an address, and the authority that
-//!   validates the pairing
-//! - [`StampedChunk`]: A chunk and its stamp, carrying the chunk's trust state
-//!   and the stamp's validation state
-//! - [`PostageContext`]: Context for batch expiry calculations
-//! - [`BatchEvent`]: Events emitted by the postage stamp contract (requires `std`)
 //!
 //! # Traits
 //!
@@ -35,8 +21,8 @@
 //! - `std` (default): Enable standard library support and events
 //! - `serde`: Enable serde serialization/deserialization
 //! - `parallel`: Enable parallel verification with rayon
-//! - `arbitrary`: Raw `Arbitrary` impls plus the valid-by-construction
-//!   `generators` module for property-based testing and fuzzing
+//! - `arbitrary`: The data half's raw `Arbitrary` impls and the
+//!   valid-by-construction `generators` module
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -57,45 +43,27 @@
     )
 )]
 
-// `alloc` is required by the stamped-chunk codec (`Vec`). `nectar-primitives`,
-// a hard dependency, also already requires an allocator, so this adds no new
-// constraint to the `no_std` build.
-extern crate alloc;
-
-mod batch;
-mod error;
-#[cfg(any(test, feature = "arbitrary"))]
-pub mod generators;
-mod geometry;
-#[cfg(any(test, feature = "arbitrary"))]
-pub mod oracles;
 mod sink;
-mod stamp;
-mod stamped;
-mod stamped_address;
-mod util;
 
 // Events (std only)
 #[cfg(feature = "std")]
 mod events;
 
-// Parallel verification (requires rayon)
+// The data half, re-exported at its original paths.
+#[cfg(any(test, feature = "arbitrary"))]
+pub use nectar_postage_primitives::generators;
+#[cfg(any(test, feature = "arbitrary"))]
+pub use nectar_postage_primitives::oracles;
 #[cfg(feature = "parallel")]
-pub mod parallel;
+pub use nectar_postage_primitives::parallel;
+pub use nectar_postage_primitives::{
+    Batch, BatchDepth, BatchId, BatchParams, Bucket, BucketDepth, PostageContext, STAMP_SIZE,
+    Stamp, StampBytes, StampDigest, StampError, StampIndex, StampedAddress, StampedChunk,
+    Unvalidated, Validated, ValidationState, VerifyingKey, calculate_bucket,
+};
 
-// Core types
-pub use batch::{Batch, BatchId, BatchParams};
-pub use error::StampError;
-pub use geometry::{BatchDepth, Bucket, BucketDepth, calculate_bucket};
 pub use sink::StampIndifferent;
-pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
-pub use stamped::StampedChunk;
-pub use stamped_address::{StampedAddress, Unvalidated, Validated, ValidationState};
-pub use util::PostageContext;
 
 // Events (std only)
 #[cfg(feature = "std")]
 pub use events::{BatchEvent, BatchEventHandler};
-
-// Re-export VerifyingKey for cached pubkey verification optimization
-pub use k256::ecdsa::VerifyingKey;

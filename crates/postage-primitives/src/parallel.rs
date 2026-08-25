@@ -46,7 +46,7 @@ pub struct VerifyResult {
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage::parallel::verify_stamps_parallel;
+/// use nectar_postage_primitives::parallel::verify_stamps_parallel;
 ///
 /// let stamps: Vec<Stamp> = /* ... */;
 /// let addresses: Vec<ChunkAddress> = /* ... */;
@@ -119,7 +119,7 @@ pub fn verify_stamps_parallel_with_owner(
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage::parallel::verify_stamps_parallel_with_pubkey;
+/// use nectar_postage_primitives::parallel::verify_stamps_parallel_with_pubkey;
 ///
 /// // First, recover the public key from any stamp in the batch
 /// let pubkey = first_stamp.recover_pubkey(&first_address)?;

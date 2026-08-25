@@ -18,16 +18,9 @@
 use core::future::Future;
 
 use nectar_primitives::marker::MaybeSend;
-use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, ChunkPut, PutUnit, Verified};
+use nectar_primitives::{AnyChunkSet, Chunk, ChunkPut, Verified};
 
 use crate::{StampedChunk, ValidationState};
-
-impl<V: ValidationState, const BODY_SIZE: usize> PutUnit for StampedChunk<Verified, V, BODY_SIZE> {
-    #[inline]
-    fn address(&self) -> &ChunkAddress {
-        Self::address(self)
-    }
-}
 
 /// Admits a stamp-indifferent store as a stamped sink.
 ///
@@ -85,7 +78,9 @@ mod tests {
     use std::sync::Mutex;
 
     use arbitrary::Unstructured;
-    use nectar_primitives::{Chunk, ChunkHas, ContentChunk, DEFAULT_BODY_SIZE, MemoryStore, Tee};
+    use nectar_primitives::{
+        Chunk, ChunkAddress, ChunkHas, ContentChunk, DEFAULT_BODY_SIZE, MemoryStore, PutUnit, Tee,
+    };
     use nectar_testing::run;
 
     use super::*;

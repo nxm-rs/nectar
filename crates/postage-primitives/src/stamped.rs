@@ -23,7 +23,7 @@ use crate::{
 /// [`issued_by`](Self::issued_by):
 ///
 /// ```compile_fail
-/// use nectar_postage::{Stamp, StampedChunk, Validated};
+/// use nectar_postage_primitives::{Stamp, StampedChunk, Validated};
 /// use nectar_primitives::{AnyChunkSet, Chunk, DEFAULT_BODY_SIZE, Verified};
 ///
 /// fn fabricate(
@@ -38,7 +38,7 @@ use crate::{
 ///
 #[cfg_attr(feature = "arbitrary", doc = "```compile_fail")]
 #[cfg_attr(not(feature = "arbitrary"), doc = "```ignore")]
-/// use nectar_postage::StampedChunk;
+/// use nectar_postage_primitives::StampedChunk;
 ///
 /// fn draw<'a, T: arbitrary::Arbitrary<'a>>() {}
 /// draw::<StampedChunk>();
