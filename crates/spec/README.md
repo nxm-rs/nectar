@@ -1,6 +1,6 @@
 # nectar-spec
 
-The Swarm network identity: the `SwarmSpec` trait and its per-network knobs (network id, kademlia tuning, postage floors), the canonical `Mainnet` and `Testnet` markers, `NetworkId`, the named-swarm table and the typed proximity-order and bin kinds the spec constants are built from.
+The Swarm network identity: the `SwarmSpec` trait and its per-network knobs (network id, kademlia tuning, postage floors), the canonical `Mainnet` and `Testnet` markers, `NetworkId`, the named-swarm table, the typed proximity-order and bin kinds the spec constants are built from, and the `SwarmPrimitives` bundle that threads the specification and a chunk body size through one generic parameter.
 
 The overlay derivation and the chunk machinery that consume these values live in `nectar-primitives-core`, which re-exports every item at its original path.
 

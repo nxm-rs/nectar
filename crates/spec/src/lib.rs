@@ -9,7 +9,8 @@
 //!
 //! The overlay derivation and the chunk machinery that consume these values
 //! live in `nectar-primitives-core`, which re-exports every item at its
-//! original path.
+//! original path. The [`SwarmPrimitives`] bundle threads the specification
+//! and a chunk body size through one generic parameter.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(
@@ -32,6 +33,7 @@
 extern crate std;
 
 pub mod bin;
+pub mod bundle;
 pub mod network_id;
 pub mod proximity_order;
 pub mod spec;
@@ -44,6 +46,7 @@ pub mod spec;
 pub const MAX_PO: u8 = 31;
 
 pub use bin::{Bin, BinError};
+pub use bundle::{SpecOf, SwarmPrimitives};
 pub use network_id::NetworkId;
 pub use proximity_order::{ProximityOrder, ProximityOrderError};
 pub use spec::{Mainnet, NamedSwarm, Swarm, SwarmKind, SwarmSpec, Testnet};
