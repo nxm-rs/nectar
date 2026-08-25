@@ -21,7 +21,7 @@
 //! ## Example
 //!
 //! ```
-//! use nectar_primitives::{OverlayAddress, XorMetric};
+//! use nectar_primitives_core::{OverlayAddress, XorMetric};
 //! use alloy_primitives::B256;
 //!
 //! let addr1 = OverlayAddress::from(B256::random());
@@ -77,7 +77,7 @@ pub trait XorMetric {
     /// the point closest to `self`:
     ///
     /// ```
-    /// # use nectar_primitives::{OverlayAddress, XorMetric};
+    /// # use nectar_primitives_core::{OverlayAddress, XorMetric};
     /// # use alloy_primitives::B256;
     /// let target = OverlayAddress::zero();
     /// let addresses = vec![

@@ -186,6 +186,7 @@ impl NamedSwarm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{format, string::ToString};
     use strum::{EnumCount, IntoEnumIterator};
 
     #[test]

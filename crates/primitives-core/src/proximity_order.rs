@@ -88,6 +88,7 @@ impl<'a> arbitrary::Arbitrary<'a> for ProximityOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
 
     #[test]
     fn min_max_consts() {

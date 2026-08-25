@@ -28,7 +28,7 @@ use crate::Bin;
 /// # Examples
 ///
 /// ```
-/// use nectar_primitives::{Bin, recompute_neighborhood_depth};
+/// use nectar_primitives_core::{Bin, recompute_neighborhood_depth};
 ///
 /// // Sparse table - depth is shallow.
 /// let counts = [0u8; 32];

@@ -4,12 +4,12 @@
 //! carrier under a [`SocHeader`], which binds the body to an owner via an
 //! id and a signature.
 
-#[cfg(any(test, feature = "std"))]
+#[cfg(any(test, feature = "sign"))]
 use alloy_primitives::b256;
 use alloy_primitives::{Address, B256, Keccak256, Signature, address, hex};
-#[cfg(feature = "std")]
+#[cfg(feature = "sign")]
 use alloy_signer::{Signer, SignerSync};
-#[cfg(feature = "std")]
+#[cfg(feature = "sign")]
 use alloy_signer_local::PrivateKeySigner;
 use bytes::{Bytes, BytesMut};
 use core::fmt;
@@ -24,11 +24,11 @@ use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::content::ContentChunk;
 use super::inner::ChunkInner;
-#[cfg(feature = "std")]
+#[cfg(feature = "sign")]
 use super::registry::ChunkRegistry;
 use super::soc_id::SocId;
 use super::traits::ChunkHeader;
-#[cfg(feature = "std")]
+#[cfg(feature = "sign")]
 use super::trust::{Chunk, Verified};
 use super::type_id::ChunkTypeId;
 use super::type_tag::ChunkVersion;
@@ -40,7 +40,7 @@ const SIGNATURE_SIZE: usize = 65;
 /// The address of the owner of the SOC for dispersed replicas.
 const DISPERSED_REPLICA_OWNER: Address = address!("0xdc5b20847f43d67928f49cd4f85d696b5a7617b5");
 /// Generated from the private key `0x0100000000000000000000000000000000000000000000000000000000000000`.
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "sign"))]
 pub(crate) const DISPERSED_REPLICA_OWNER_PK: B256 =
     b256!("0x0100000000000000000000000000000000000000000000000000000000000000");
 
@@ -196,7 +196,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// # Returns
     ///
     /// A Result containing the new SingleOwnerChunk, or an error if creation fails.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new(id: SocId, data: impl Into<Bytes>, signer: &impl SignerSync) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
@@ -213,7 +213,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// derived here, never caller-supplied, and no signature recovery runs.
     /// The replica pin still applies; debug builds retain a full verify
     /// assertion.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[must_use = "this returns a sealed chunk without modifying the input"]
     pub fn seal<R>(
         id: SocId,
@@ -275,7 +275,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// # Arguments
     /// * `mined_byte` - The first byte of the chunk's ID.
     /// * `body` - The underlying BMT body containing the data and metadata.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new_dispersed_replica(mined_byte: u8, body: BmtBody<BODY_SIZE>) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
@@ -421,7 +421,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, Initial> {
     }
 
     /// Initialize with a specific body
-    #[cfg(any(feature = "std", feature = "arbitrary"))]
+    #[cfg(feature = "sign")]
     fn with_body(
         mut self,
         body: BmtBody<BODY_SIZE>,
@@ -451,7 +451,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
     }
 
     /// Creates a new dispersed replica chunk with the given first byte and transitions to ReadyToBuild
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[allow(clippy::unwrap_used, clippy::indexing_slicing)] // the WithData typestate guarantees body is Some; id and body_hash are fixed 32-byte values; DISPERSED_REPLICA_OWNER_PK is a known-valid constant key
     fn dispersed_replica(
         self,
@@ -470,7 +470,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
 
 impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithId> {
     /// Sign the chunk with the given signer
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[allow(clippy::unwrap_used)] // the WithId typestate guarantees body and id are Some
     fn with_signer(
         self,
@@ -519,7 +519,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, ReadyToBuild
     }
 }
 
-#[cfg(all(any(test, feature = "arbitrary"), feature = "std"))]
+#[cfg(all(any(test, feature = "arbitrary"), feature = "sign"))]
 impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// Valid-by-construction generator: a chunk with a `u`-drawn id and body,
     /// signed by `signer` so ownership recovery and `verify` succeed.
@@ -560,7 +560,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for SingleOwnerChunk<B
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     use crate::PrimitivesError;
     use crate::{DEFAULT_BODY_SIZE, chunk::ChunkOps};
 
@@ -573,7 +573,7 @@ mod tests {
 
     type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     fn get_test_wallet() -> PrivateKeySigner {
         // Test private key; the account is 0x654BFE2E030Ff82B8741c7a0BF9eC26Ea523b31C,
         // the same key the feeds sequence vectors sign with.
@@ -609,7 +609,7 @@ mod tests {
     }
 
     // Strategy for valid-by-construction chunks via `arbitrary_signed`.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     fn signed_chunk_strategy() -> impl Strategy<Value = DefaultSingleOwnerChunk> {
         proptest::collection::vec(any::<u8>(), 64..1024).prop_filter_map(
             "arbitrary_signed needs a signable draw",
@@ -621,7 +621,7 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     proptest! {
         #[test]
         fn test_signed_chunk_verifies(chunk in signed_chunk_strategy()) {
@@ -720,7 +720,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn test_new() {
         let id = SocId::ZERO;
@@ -790,7 +790,7 @@ mod tests {
         assert_eq!(chunk.address().as_ref(), expected_address);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn test_invalid_dispersed_replica() -> Result<()> {
         let test_data = b"test data".to_vec();
@@ -909,7 +909,7 @@ mod tests {
 
     /// The replica pin is an acceptance rule: a replica-owner signature over a
     /// non-replica id recovers the pinned owner but binds no owner fact.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn chunk_ops_owner_rejects_the_replica_pin() {
         let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
@@ -920,7 +920,7 @@ mod tests {
 
     /// The seal lands exactly where the parse-then-verify route lands, with
     /// the owner fact seeded from provenance.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn seal_matches_the_from_envelope_route() {
         use crate::chunk::{Chunk, StandardChunkSet, Verified};
@@ -945,7 +945,7 @@ mod tests {
 
     /// The seal's accept set equals verify's: the replica pin holds on the
     /// provenance path too, in release builds as well.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn seal_enforces_the_replica_pin() {
         use crate::chunk::StandardChunkSet;
@@ -964,7 +964,7 @@ mod tests {
 
     /// The dispersed-replica rule lives inside validate: a replica-owner
     /// signature over a non-replica id fails even at its committed address.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "sign")]
     #[test]
     fn soc_header_validate_enforces_replica_rule() {
         let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
