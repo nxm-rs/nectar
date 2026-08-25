@@ -507,7 +507,7 @@ async fn assert_sink_refusal<M: Manifest<ChunkRef>>(manifest: &M, file: ChunkRef
     let error = view.load(&path, &mut RefusingSink).await.unwrap_err();
     let sink = matches!(error, ManifestError::Sink(_));
     assert!(sink, "{f}: wrong variant: {error:?}");
-    let source = std::error::Error::source(&error);
+    let source = core::error::Error::source(&error);
     let kept = source.is_some_and(|s| s.downcast_ref::<Refused>().is_some());
     assert!(kept, "{f}: the sink's own error left the chain");
 }

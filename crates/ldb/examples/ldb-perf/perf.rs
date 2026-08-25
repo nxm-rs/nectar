@@ -7,8 +7,8 @@
 //! is `rounds * rtt` where `rounds` is read off the real cursor under a paused
 //! virtual clock. A capability gap is a `null` with a reason, never an estimate.
 
+use core::error::Error;
 use std::collections::BTreeMap;
-use std::error::Error;
 use std::future::Future;
 use std::time::Duration;
 

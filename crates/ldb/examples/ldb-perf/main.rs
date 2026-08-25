@@ -20,7 +20,7 @@ mod perf;
 mod results;
 mod store;
 
-use std::error::Error;
+use core::error::Error;
 use std::path::PathBuf;
 
 use nectar_ldb::{Format, V1};

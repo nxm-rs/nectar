@@ -17,7 +17,7 @@ use nectar_primitives::bmt::Prover;
 use nectar_primitives::chunk::ChunkOps;
 use nectar_primitives::{DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk, SocId};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn core::error::Error>> {
     println!("Nectar Primitives Example");
     println!("=========================\n");
 
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn content_chunk_example() -> Result<(), Box<dyn std::error::Error>> {
+fn content_chunk_example() -> Result<(), Box<dyn core::error::Error>> {
     // Create a content-addressed chunk directly
     let data = b"This is a test of the content-addressed chunk system.".to_vec();
     let chunk = DefaultContentChunk::new(data)?;
@@ -90,7 +90,7 @@ fn content_chunk_example() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error::Error>> {
+fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn core::error::Error>> {
     // Create a unique ID for the chunk
     let id = SocId::random();
     println!(
@@ -149,7 +149,7 @@ fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn deserialization_example() -> Result<(), Box<dyn std::error::Error>> {
+fn deserialization_example() -> Result<(), Box<dyn core::error::Error>> {
     // Create chunks of both types
     let data1 = b"Example for deserialization".to_vec();
     let content_chunk = DefaultContentChunk::new(data1)?;
@@ -183,7 +183,7 @@ fn deserialization_example() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn bmt_proof_example() -> Result<(), Box<dyn std::error::Error>> {
+fn bmt_proof_example() -> Result<(), Box<dyn core::error::Error>> {
     // Create some test data
     let data = b"This is an example of BMT hashing and proof generation.";
 

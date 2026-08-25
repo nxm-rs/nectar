@@ -10,7 +10,7 @@ use alloy_signer_local::LocalSigner;
 use nectar_primitives::chunk::ChunkOps;
 use nectar_primitives::{DefaultContentChunk, DefaultSingleOwnerChunk, SocId};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn core::error::Error>> {
     println!("Nectar Primitives - Creation Pattern Examples");
     println!("===========================================\n");
 
@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn content_chunk_creation_methods() -> Result<(), Box<dyn std::error::Error>> {
+fn content_chunk_creation_methods() -> Result<(), Box<dyn core::error::Error>> {
     println!("Content Chunk Creation Methods");
     println!("-----------------------------");
 
@@ -57,7 +57,7 @@ fn content_chunk_creation_methods() -> Result<(), Box<dyn std::error::Error>> {
 
 fn single_owner_creation_methods(
     wallet: &impl SignerSync,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn core::error::Error>> {
     println!("\nSingle Owner Chunk Creation Methods");
     println!("---------------------------------");
 
@@ -93,7 +93,7 @@ fn single_owner_creation_methods(
     Ok(())
 }
 
-fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error::Error>> {
+fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn core::error::Error>> {
     println!("\nSpecialized Use Cases");
     println!("-------------------");
 

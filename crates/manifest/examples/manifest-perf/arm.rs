@@ -2,7 +2,7 @@
 //! format's own API, so the two columns are the same call sequence. Every arm
 //! owns its counting store, so a cost is a counter delta.
 
-use std::error::Error;
+use core::error::Error;
 use std::ops::Bound;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -18,8 +18,8 @@ mod reference;
 mod results;
 mod store;
 
+use core::error::Error;
 use core::num::NonZeroUsize;
-use std::error::Error;
 use std::path::PathBuf;
 
 use nectar_testing::bench::RunMeta;

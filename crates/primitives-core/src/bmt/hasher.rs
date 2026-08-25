@@ -459,8 +459,11 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         // Zero-pad the segment: bytes past the end of `data` stay zero.
         let mut segment = [0u8; SEGMENT_SIZE];
         let start = i.saturating_mul(SEGMENT_SIZE);
-        for (dst, src) in segment.iter_mut().zip(data.iter().skip(start)) {
-            *dst = *src;
+        if let Some(tail) = data.get(start..) {
+            let len = tail.len().min(SEGMENT_SIZE);
+            if let (Some(dst), Some(head)) = (segment.get_mut(0..len), tail.get(0..len)) {
+                dst.copy_from_slice(head);
+            }
         }
 
         let mut hasher = node_hasher(self.prefix.as_deref());
