@@ -1,9 +1,9 @@
 //! Verifying boundary adapter over an untrusted read medium.
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Unverified, Verified};
-use crate::error::PrimitivesError;
+use crate::error::{PrimitivesError, StoreError};
 
-use super::typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit};
+use super::typed::{ChunkGet, ChunkPut, PutUnit};
 
 /// Lifts an untrusted medium to `Trust = Verified`: every get runs the
 /// member's full acceptance rule against the requested address, so a
@@ -76,9 +76,18 @@ impl<U: PutUnit, S: ChunkPut<U>> ChunkPut<U> for VerifyingStore<S> {
     }
 }
 
-impl<S: ChunkHas> ChunkHas for VerifyingStore<S> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        self.0.has(address).await
+impl<E: StoreError> StoreError for VerifyError<E> {
+    /// A miss passes through the lift unchanged; a mismatched claim or a
+    /// failed acceptance rule is a terminal failure, never an absence.
+    fn is_definitely_absent(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(error) if error.is_definitely_absent()
+        )
+    }
+
+    fn is_transient(&self) -> bool {
+        matches!(self, Self::Store(error) if error.is_transient())
     }
 }
 
@@ -178,5 +187,37 @@ mod tests {
             run(store.get(&ChunkAddress::default())),
             Err(VerifyError::Store(ChunkStoreError::NotFound(_)))
         ));
+    }
+
+    /// New variants must be classified, so the match stays exhaustive; the
+    /// predicates stay mutually exclusive per variant.
+    #[test]
+    fn every_variant_is_classified_into_exactly_one_group() {
+        let miss = VerifyError::Store(ChunkStoreError::not_found(&ChunkAddress::default()));
+        let mismatched = VerifyError::AddressMismatch {
+            requested: ChunkAddress::default(),
+            returned: ChunkAddress::default(),
+        };
+        let failed = VerifyError::Chunk(PrimitivesError::Store(ChunkStoreError::not_found(
+            &ChunkAddress::default(),
+        )));
+        for error in [miss, mismatched, failed] {
+            let absent = StoreError::is_definitely_absent(&error);
+            let transient = StoreError::is_transient(&error);
+            assert!(!(absent && transient), "the groups stay exclusive");
+            match &error {
+                VerifyError::Store(inner) => {
+                    assert_eq!(
+                        (absent, transient),
+                        (inner.is_definitely_absent(), inner.is_transient()),
+                        "the lift passes the inner classification through"
+                    );
+                }
+                VerifyError::AddressMismatch { .. } | VerifyError::Chunk(..) => {
+                    assert!(!absent, "a verification failure is not an absence answer");
+                    assert!(!transient, "a verification failure is not retryable");
+                }
+            }
+        }
     }
 }

@@ -1,23 +1,34 @@
 //! Port of the reference client's concurrent finder, measured over the same
-//! counting presence store: a fixed-width bounded exponential lookahead that
+//! counting probe store: a fixed-width bounded exponential lookahead that
 //! probes each interval at offsets `2^k - 1` for `k = 1..=LEVELS`.
 //!
 //! Results fold present-first in ascending level, one valid arrival order of
-//! the original (presence answers beat its absence timeout). In the original
-//! every probe is a full retrieval; presence probes stand in here, so a cell
-//! carries no certified get.
+//! the original (probes answer at once rather than by timeout). As in the
+//! original, every probe is a full retrieval, so a cell carries no certified
+//! get.
 
 use core::error::Error;
 
 use futures_util::future::join_all;
 use nectar_feeds::{Feed, Sequence};
-use nectar_primitives::store::ChunkHas;
+use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::store::ChunkGet;
 
 use crate::corpus::Corpus;
 use crate::measure::{Cell, block_on_paused};
 use crate::store::ProbeStore;
 
 type Err = Box<dyn Error>;
+
+/// Answer one probe with a classified get: a hit is present, a definite miss
+/// is absent, and any other failure propagates.
+async fn probe(store: &ProbeStore<'_>, address: &ChunkAddress) -> Result<bool, Err> {
+    match store.get(address).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.is_definitely_absent() => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
 
 /// Fixed lookahead concurrency: each batch spans `2^LEVELS` slots.
 pub const LEVELS: usize = 8;
@@ -93,7 +104,12 @@ enum Verdict {
 
 /// Probe the interval concurrently at levels `min + 1..=interval.level`, one
 /// virtual tick for the whole batch.
-async fn batch(store: &ProbeStore<'_>, feed: &Feed, interval: &Interval, min: usize) -> Vec<Probe> {
+async fn batch(
+    store: &ProbeStore<'_>,
+    feed: &Feed,
+    interval: &Interval,
+    min: usize,
+) -> Result<Vec<Probe>, Err> {
     let indexed: Vec<(usize, u64)> = (min + 1..=interval.level)
         .map(|level| (level, interval.base + (1 << level) - 1))
         .collect();
@@ -101,16 +117,16 @@ async fn batch(store: &ProbeStore<'_>, feed: &Feed, interval: &Interval, min: us
         .iter()
         .map(|(_, index)| feed.update_address(&Sequence::new(*index)))
         .collect();
-    let answers = join_all(addresses.iter().map(|address| store.has(address))).await;
-    indexed
-        .into_iter()
-        .zip(answers)
-        .map(|((level, index), present)| Probe {
+    let answers = join_all(addresses.iter().map(|address| probe(store, address))).await;
+    let mut probes = Vec::with_capacity(indexed.len());
+    for ((level, index), answer) in indexed.into_iter().zip(answers) {
+        probes.push(Probe {
             index,
             level,
-            present,
-        })
-        .collect()
+            present: answer?,
+        });
+    }
+    Ok(probes)
 }
 
 /// Fold a batch present-first in ascending level; stale answers past a
@@ -152,13 +168,13 @@ fn collect(interval: &mut Interval, mut probes: Vec<Probe>) -> Result<Verdict, E
 
 /// Run the finder to its verdict: the committed index and next free slot.
 async fn run(store: &ProbeStore<'_>, feed: &Feed) -> Result<(Option<u64>, Option<u64>), Err> {
-    if !store.has(&feed.update_address(&Sequence::ZERO)).await {
+    if !probe(store, &feed.update_address(&Sequence::ZERO)).await? {
         return Ok((None, Some(0)));
     }
     let mut interval = Interval::new(0);
     let mut min = 0;
     loop {
-        let probes = batch(store, feed, &interval, min).await;
+        let probes = batch(store, feed, &interval, min).await?;
         match collect(&mut interval, probes)? {
             Verdict::Committed(index) => return Ok((Some(index), Some(index + 1))),
             Verdict::Narrow => {
@@ -176,7 +192,7 @@ async fn run(store: &ProbeStore<'_>, feed: &Feed) -> Result<(Option<u64>, Option
 /// Measure one reference-finder cell; `width` reports the fixed concurrency.
 pub fn measure(corpus: &Corpus, n: u64) -> Result<Cell, Err> {
     block_on_paused(async {
-        let store = ProbeStore::new(corpus, n).await?;
+        let store = ProbeStore::new(corpus, n)?;
         let feed = corpus.feed();
         let t0 = tokio::time::Instant::now();
         let (committed, next) = run(&store, &feed).await?;
@@ -186,9 +202,9 @@ pub fn measure(corpus: &Corpus, n: u64) -> Result<Cell, Err> {
             n,
             width: LEVELS,
             rounds,
-            total_probes: counts.has_calls,
+            total_probes: counts.gets,
             wasted_probes: counts.absent,
-            verified_gets: counts.gets,
+            verified_gets: 0,
             committed,
             next,
         })

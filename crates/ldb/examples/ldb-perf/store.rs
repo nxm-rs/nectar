@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::time::Duration;
 
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, Verified};
-use nectar_primitives::store::{ChunkGet, ChunkHas, MemoryStore};
+use nectar_primitives::store::{ChunkGet, MemoryStore};
 
 /// A read-only store that models one network round trip per node fetch: every
 /// `get` awaits `rtt`, then serves the chunk from an already-populated backing
@@ -48,11 +48,5 @@ impl<R: ChunkRegistry> ChunkGet<R> for LatencyStore<'_, R> {
         self.gets.fetch_add(1, SeqCst);
         tokio::time::sleep(self.rtt).await;
         ChunkGet::get(self.inner, address).await
-    }
-}
-
-impl<R: ChunkRegistry> ChunkHas for LatencyStore<'_, R> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        ChunkHas::has(self.inner, address).await
     }
 }

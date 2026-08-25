@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use nectar_governor::{Admission, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{Chunk, IntoVerified, SingleOwnerOnlyChunkSet};
-use nectar_primitives::store::{ChunkGet, ChunkHas};
+use nectar_primitives::chunk::{Chunk, ChunkAddress, IntoVerified, SingleOwnerOnlyChunkSet};
+use nectar_primitives::store::{ChunkGet, StoreError};
 
 use crate::error::{FeedError, Result};
 use crate::feed::Feed;
@@ -54,12 +54,12 @@ impl<S, const BODY_SIZE: usize> Reader<S, BODY_SIZE> {
         }
     }
 
-    /// Set the concurrent presence-probe window of the latest-update
-    /// finders.
+    /// Set the concurrent probe window of the latest-update finders.
     ///
     /// A store-capacity knob, not a pure speedup: a wide window can induce
-    /// timeouts a presence probe must report as absence. Width one is the
-    /// sequential scan; widths past `u16::MAX` clamp to it.
+    /// failures on a slow medium; such a failure aborts the search instead
+    /// of masquerading as absence. Width one is the sequential scan; widths
+    /// past `u16::MAX` clamp to it.
     #[must_use]
     pub const fn with_window(mut self, window: NonZeroUsize) -> Self {
         self.window = window;
@@ -98,10 +98,20 @@ where
 
 impl<S, const BODY_SIZE: usize> Reader<S, BODY_SIZE>
 where
-    S: ChunkGet<SingleOwnerOnlyChunkSet<BODY_SIZE>> + ChunkHas,
+    S: ChunkGet<SingleOwnerOnlyChunkSet<BODY_SIZE>>,
     Chunk<S::Trust, SingleOwnerOnlyChunkSet<BODY_SIZE>>:
         IntoVerified<Registry = SingleOwnerOnlyChunkSet<BODY_SIZE>>,
 {
+    /// Answer one probe with a classified get: a hit is present, a definite
+    /// miss is absent, and any other failure propagates.
+    async fn probe(store: &S, address: &ChunkAddress) -> Result<bool> {
+        match store.get(address).await {
+            Ok(_) => Ok(true),
+            Err(error) if error.is_definitely_absent() => Ok(false),
+            Err(error) => Err(FeedError::store(error)),
+        }
+    }
+
     /// Certify the update at `index` and pair it with its successor slot.
     async fn found(&self, index: u64) -> Result<Latest<BODY_SIZE>> {
         let seq = Sequence::new(index);
@@ -165,7 +175,7 @@ where
                 let address = self.feed.update_address(&Sequence::new(index));
                 let store = &self.store;
                 outstanding.insert(index);
-                in_flight.push(async move { (index, store.has(&address).await) });
+                in_flight.push(async move { (index, Self::probe(store, &address).await) });
             }
             // The head is never already answered and the window always has a
             // free slot here, so the set is never empty. Were it empty the
@@ -178,7 +188,7 @@ where
             );
             if let Some((index, present)) = in_flight.next().await {
                 outstanding.remove(&index);
-                answers.insert(index, present);
+                answers.insert(index, present?);
             }
         }
     }
@@ -186,8 +196,9 @@ where
     /// Latest update by exponential-then-binary probing, from index zero.
     ///
     /// Assumes gapless publication: a hole reads as the end of the feed.
-    /// The returned update is certified; absence rests on unverified
-    /// presence answers, so a lying or unavailable store truncates the scan
+    /// The returned update is certified; absence is the store's own
+    /// definitively absent answer, so a store that fails otherwise aborts
+    /// the search, and a store that misreports absence truncates the scan
     /// to an earlier genuine update, never a forged one.
     pub async fn latest(&self) -> Result<Latest<BODY_SIZE>> {
         self.latest_from(Sequence::ZERO).await
@@ -201,8 +212,8 @@ where
     }
 
     /// Latest update by stepwise scan from a floor slot. The baseline the
-    /// probing search is measured against; the absence caveat of
-    /// [`latest`](Self::latest) applies.
+    /// probing search is measured against; the absence and failure caveats
+    /// of [`latest`](Self::latest) apply.
     pub async fn latest_linear_from(&self, floor: Sequence) -> Result<Latest<BODY_SIZE>> {
         self.drive(floor, probe::resolve_linear).await
     }

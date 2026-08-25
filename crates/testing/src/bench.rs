@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
 use nectar_primitives::ChunkOps;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, Verified};
-use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore};
+use nectar_primitives::store::{ChunkGet, ChunkPut, MemoryStore};
 use serde::Serialize;
 
 /// A point-in-time read of every counter plus the resident chunk count.
@@ -25,8 +25,7 @@ pub struct Counts {
     pub distinct_puts: u64,
     /// Distinct resident addresses.
     pub total_chunks: u64,
-    pub has_calls: u64,
-    /// Presence probes answered absent.
+    /// Probes answered absent.
     pub absent: u64,
 }
 
@@ -38,7 +37,6 @@ pub struct Counters {
     put_bytes: AtomicU64,
     live_bytes: AtomicU64,
     distinct_puts: AtomicU64,
-    has_calls: AtomicU64,
     absent: AtomicU64,
 }
 
@@ -63,12 +61,7 @@ impl Counters {
         }
     }
 
-    /// Split from [`record_absent`](Self::record_absent) so a store that awaits
-    /// between issuing a probe and answering it still counts a cancelled probe.
-    pub fn record_has(&self) {
-        self.has_calls.fetch_add(1, SeqCst);
-    }
-
+    /// Record a probe answered with a definitively absent report.
     pub fn record_absent(&self) {
         self.absent.fetch_add(1, SeqCst);
     }
@@ -83,7 +76,6 @@ impl Counters {
             live_bytes: self.live_bytes.load(SeqCst),
             distinct_puts: self.distinct_puts.load(SeqCst),
             total_chunks,
-            has_calls: self.has_calls.load(SeqCst),
             absent: self.absent.load(SeqCst),
         }
     }
@@ -99,7 +91,7 @@ impl Counters {
     }
 }
 
-/// In-memory chunk store that counts gets, puts, probes and byte residency.
+/// In-memory chunk store that counts gets, puts and byte residency.
 #[derive(Debug)]
 pub struct CountingStore<R: ChunkRegistry = StandardChunkSet> {
     inner: MemoryStore<R>,
@@ -148,7 +140,7 @@ impl<R: ChunkRegistry> ChunkPut<Chunk<Verified, R>> for CountingStore<R> {
     async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {
         let bytes = chunk.envelope().data().len() as u64;
         let address = *chunk.address();
-        let resident = ChunkHas::has(&self.inner, &address).await;
+        let resident = self.inner.get(&address).is_some();
         self.counters.record_put(bytes, resident);
         ChunkPut::put(&self.inner, chunk).await
     }
@@ -161,17 +153,6 @@ impl<R: ChunkRegistry> ChunkGet<R> for CountingStore<R> {
     async fn get(&self, address: &ChunkAddress) -> Result<Chunk<Verified, R>, Self::Error> {
         self.counters.record_get();
         ChunkGet::get(&self.inner, address).await
-    }
-}
-
-impl<R: ChunkRegistry> ChunkHas for CountingStore<R> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        self.counters.record_has();
-        let present = ChunkHas::has(&self.inner, address).await;
-        if !present {
-            self.counters.record_absent();
-        }
-        present
     }
 }
 
@@ -255,14 +236,13 @@ mod tests {
         counters.record_put(100, false);
         counters.record_put(100, true);
         counters.record_get();
-        counters.record_has();
         counters.record_absent();
-        counters.record_has();
+        counters.record_get();
 
         let counts = counters.snapshot(1);
         assert_eq!((counts.puts, counts.distinct_puts), (2, 1));
         assert_eq!((counts.put_bytes, counts.live_bytes), (200, 100));
-        assert_eq!((counts.has_calls, counts.absent, counts.gets), (2, 1, 1));
+        assert_eq!((counts.absent, counts.gets), (1, 2));
     }
 
     #[test]

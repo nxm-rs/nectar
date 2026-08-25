@@ -10,9 +10,9 @@
 //! [`Publisher`] signs and publishes updates through
 //! [`ChunkPut`](nectar_primitives::store::ChunkPut); [`Reader`] fetches and
 //! certifies them through [`ChunkGet`](nectar_primitives::store::ChunkGet)
-//! and locates the latest [`Sequence`] update by probing
-//! [`ChunkHas`](nectar_primitives::store::ChunkHas). No clock and no network
-//! live in this crate.
+//! and locates the latest [`Sequence`] update by probing classified gets: a
+//! slot is absent only when the store definitively answers not found. No
+//! clock and no network live in this crate.
 //!
 //! ```
 //! use alloy_primitives::address;

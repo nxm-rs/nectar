@@ -1,5 +1,7 @@
 //! Fan-out over the put seam.
 
+use crate::error::StoreError;
+
 use super::typed::{ChunkPut, PutUnit};
 
 /// Fans one put out to two sinks: a local leg, then a forward leg.
@@ -71,6 +73,24 @@ pub enum TeeError<L, F> {
     Forward(#[source] F),
 }
 
+impl<L: StoreError, F: StoreError> StoreError for TeeError<L, F> {
+    /// The failed leg's classification rides its failure, so a retrier sees
+    /// the condition it can retry and a definite miss a leg might report.
+    fn is_definitely_absent(&self) -> bool {
+        match self {
+            Self::Local(error) => error.is_definitely_absent(),
+            Self::Forward(error) => error.is_definitely_absent(),
+        }
+    }
+
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Local(error) => error.is_transient(),
+            Self::Forward(error) => error.is_transient(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
@@ -80,7 +100,7 @@ mod tests {
 
     use nectar_testing::run;
 
-    use super::super::{ChunkHas, MemoryStore};
+    use super::super::MemoryStore;
     use super::*;
     use crate::chunk::{Chunk, ChunkAddress, ContentChunk, StandardChunkSet, Verified};
 
@@ -113,6 +133,16 @@ mod tests {
     #[error("leg refused")]
     struct LegRefused;
 
+    impl StoreError for LegRefused {
+        fn is_definitely_absent(&self) -> bool {
+            false
+        }
+
+        fn is_transient(&self) -> bool {
+            false
+        }
+    }
+
     #[derive(Debug, Default)]
     struct FailSink;
 
@@ -134,7 +164,7 @@ mod tests {
             let address = *chunk.address();
 
             tee.put(chunk).await.expect("both legs accept");
-            assert!(store.has(&address).await);
+            assert!(store.get(&address).is_some());
             assert_eq!(*recorder.seen.lock(), [address]);
         });
     }
@@ -170,7 +200,7 @@ mod tests {
 
             let err = tee.put(chunk).await.expect_err("forward leg fails");
             assert!(matches!(err, TeeError::Forward(LegRefused)));
-            assert!(store.has(&address).await);
+            assert!(store.get(&address).is_some());
         });
     }
 

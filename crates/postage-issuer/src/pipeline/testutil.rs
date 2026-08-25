@@ -9,7 +9,8 @@ use alloy_primitives::{Address, B256, Signature, U256};
 use nectar_governor::Window;
 use nectar_postage::{Batch, Stamp, StampedChunk, Validated};
 use nectar_primitives::{
-    AnyChunkSet, Chunk, ChunkAddress, ChunkPut, ContentChunk, DEFAULT_BODY_SIZE, Verified,
+    AnyChunkSet, Chunk, ChunkAddress, ChunkPut, ContentChunk, DEFAULT_BODY_SIZE, StoreError,
+    Verified,
 };
 use nectar_tasks::{BoxFuture, Spawn, TaskHandle};
 use std::sync::{Mutex, mpsc};
@@ -216,6 +217,16 @@ impl<const B: usize> ChunkPut<StampedChunk<Verified, Validated, B>> for Counting
 #[derive(Debug, PartialEq, thiserror::Error)]
 #[error("sink refused")]
 pub(super) struct SinkRefused;
+
+impl StoreError for SinkRefused {
+    fn is_definitely_absent(&self) -> bool {
+        false
+    }
+
+    fn is_transient(&self) -> bool {
+        false
+    }
+}
 
 /// Refuses every pair.
 #[derive(Clone, Default)]

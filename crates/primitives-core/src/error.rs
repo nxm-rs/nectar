@@ -172,9 +172,97 @@ pub enum ChunkStoreError {
     Other(#[source] BoxedError),
 }
 
+/// Classification of a chunk-store seam error.
+///
+/// Every error the [`ChunkGet`](nectar_primitives::store::ChunkGet) and
+/// [`ChunkPut`](nectar_primitives::store::ChunkPut) seams hand back answers
+/// whether an absence is definite, so a generic consumer can separate a miss
+/// from a failure the medium could not classify. Swarm has no wire presence
+/// verb, so a networked negative always arrives as an error: a definite
+/// absence is the medium's own not-found answer, and nothing else may be
+/// read as one.
+pub trait StoreError:
+    core::error::Error + nectar_marker::MaybeSend + nectar_marker::MaybeSync + 'static
+{
+    /// The medium definitively answered that the addressed data is not
+    /// there: a miss.
+    fn is_definitely_absent(&self) -> bool;
+
+    /// The failure is a medium condition that may clear on retry, so a
+    /// bounded retrier should retry.
+    ///
+    /// Mutually exclusive with [`StoreError::is_definitely_absent`]; an
+    /// error that is neither is a terminal failure.
+    fn is_transient(&self) -> bool;
+}
+
+impl StoreError for core::convert::Infallible {
+    fn is_definitely_absent(&self) -> bool {
+        false
+    }
+
+    fn is_transient(&self) -> bool {
+        false
+    }
+}
+
 impl ChunkStoreError {
     /// Create a `NotFound` error for the given address.
     pub const fn not_found(address: &ChunkAddress) -> Self {
         Self::NotFound(*address)
+    }
+
+    /// A `NotFound` is the medium's own absence answer; a boxed backend
+    /// error cannot be classified at this boundary.
+    pub const fn is_definitely_absent(&self) -> bool {
+        matches!(self, Self::NotFound(..))
+    }
+
+    /// A miss is terminal and a boxed backend error is unclassifiable here,
+    /// so nothing this type carries is worth retrying.
+    pub const fn is_transient(&self) -> bool {
+        false
+    }
+}
+
+impl StoreError for ChunkStoreError {
+    fn is_definitely_absent(&self) -> bool {
+        Self::is_definitely_absent(self)
+    }
+
+    fn is_transient(&self) -> bool {
+        Self::is_transient(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::boxed::Box;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("backend refusal")]
+    struct BackendRefusal;
+
+    /// New variants must be classified, so the match stays exhaustive; the
+    /// predicates stay mutually exclusive per variant.
+    #[test]
+    fn every_variant_is_classified_into_exactly_one_group() {
+        let not_found = ChunkStoreError::not_found(&ChunkAddress::default());
+        let other = ChunkStoreError::Other(Box::new(BackendRefusal));
+        for error in [not_found, other] {
+            let absent = error.is_definitely_absent();
+            let transient = error.is_transient();
+            match &error {
+                ChunkStoreError::NotFound(..) => {
+                    assert!(absent, "a miss is definitely absent");
+                    assert!(!transient, "a miss is not retryable");
+                }
+                ChunkStoreError::Other(..) => {
+                    assert!(!absent, "a backend error is not an absence answer");
+                    assert!(!transient, "an unclassifiable error is not retryable");
+                }
+            }
+        }
     }
 }
