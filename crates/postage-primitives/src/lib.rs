@@ -20,6 +20,10 @@
 //! - [`StampedChunk`]: A chunk and its stamp, carrying the chunk's trust state
 //!   and the stamp's validation state
 //! - [`PostageContext`]: Context for batch expiry calculations
+//! - [`StoreKey`]: The key of a stamped-store entry: address, batch, stamp hash
+//! - [`ChunkStore`]: The synchronous stamp-keyed store seam, composing the
+//!   stampless `SyncChunkGet` retrieval
+//! - [`Lifted`]: The adapter that lifts the synchronous seams onto the async seams
 //!
 //! # Features
 //!
@@ -66,6 +70,7 @@ mod sink;
 mod stamp;
 mod stamped;
 mod stamped_address;
+mod store;
 mod util;
 
 // Core types
@@ -75,6 +80,7 @@ pub use geometry::{BatchDepth, Bucket, BucketDepth, calculate_bucket};
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
 pub use stamped_address::{StampedAddress, Unvalidated, Validated, ValidationState};
+pub use store::{ChunkStore, Lifted, StoreKey};
 pub use util::PostageContext;
 
 // Re-export VerifyingKey for cached pubkey verification optimization

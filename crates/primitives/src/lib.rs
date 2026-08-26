@@ -152,7 +152,7 @@ pub type DefaultMemoryStore = MemoryStore<StandardChunkSet>;
 // Chunk storage traits
 pub use store::{
     ChunkGet, ChunkPut, ChunkStoreError, ContentGet, ContentGetError, MemoryStore, PutUnit,
-    StoreError, Tee, TeeError, TrustedGet, VerifyError, VerifyingStore,
+    StoreError, SyncChunkGet, Tee, TeeError, TrustedGet, VerifyError, VerifyingStore,
 };
 #[cfg(feature = "std")]
 pub use store::{RetryConfig, RetryingChunkGet, Sleeper};

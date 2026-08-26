@@ -14,6 +14,9 @@
 //! - [`ChunkPut`](nectar_primitives::ChunkPut) over a [`StampedChunk`]: the
 //!   sink for a paid chunk, with [`StampIndifferent`] bridging a plain chunk
 //!   store into it
+//! - [`ChunkStore`](nectar_postage_primitives::ChunkStore): the synchronous
+//!   stamp-keyed store seam, with [`Lifted`](nectar_postage_primitives::Lifted)
+//!   lifting it onto the async seams
 //! - [`BatchEventHandler`]: Handle batch events from the blockchain (requires `std`)
 //!
 //! # Features
@@ -57,9 +60,10 @@ pub use nectar_postage_primitives::oracles;
 #[cfg(feature = "parallel")]
 pub use nectar_postage_primitives::parallel;
 pub use nectar_postage_primitives::{
-    Batch, BatchDepth, BatchId, BatchParams, Bucket, BucketDepth, PostageContext, STAMP_SIZE,
-    Stamp, StampBytes, StampDigest, StampError, StampIndex, StampedAddress, StampedChunk,
-    Unvalidated, Validated, ValidationState, VerifyingKey, calculate_bucket,
+    Batch, BatchDepth, BatchId, BatchParams, Bucket, BucketDepth, ChunkStore, Lifted,
+    PostageContext, STAMP_SIZE, Stamp, StampBytes, StampDigest, StampError, StampIndex,
+    StampedAddress, StampedChunk, StoreKey, Unvalidated, Validated, ValidationState, VerifyingKey,
+    calculate_bucket,
 };
 
 pub use sink::StampIndifferent;
