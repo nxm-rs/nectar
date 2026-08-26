@@ -18,6 +18,7 @@ categories = ["no-std", "data-structures"]
 workspace = true
 
 [dependencies]
+nectar-marker = { workspace = true }
 nectar-postage-primitives = { workspace = true }
 nectar-primitives = { workspace = true }
 

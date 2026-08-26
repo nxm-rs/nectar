@@ -11,6 +11,7 @@
 use core::convert::Infallible;
 use core::task::{Context, Poll};
 
+use nectar_marker::{MaybeSend, MaybeSync};
 use positioned_io::{ReadAt, Size};
 use std::io;
 
@@ -23,7 +24,9 @@ use crate::num::u64_from_usize;
 /// source never retains the bytes it hands over.
 pub trait Source {
     /// Typed pull failure.
-    type Error;
+    ///
+    /// The house error shape: structured and boxable across a seam boundary.
+    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// Fill the front of `buf`, delivering the byte count; zero ends the
     /// source. A count past `buf.len()` breaks the contract and the driver
