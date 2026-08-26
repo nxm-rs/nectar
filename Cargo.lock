@@ -2603,6 +2603,7 @@ dependencies = [
  "auto_impl",
  "bytes",
  "derive_more",
+ "futures-util",
  "nectar-file",
  "nectar-ldb",
  "nectar-mantaray",

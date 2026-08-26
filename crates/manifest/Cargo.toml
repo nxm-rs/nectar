@@ -20,6 +20,7 @@ workspace = true
 [dependencies]
 auto_impl = { workspace = true }
 derive_more = { workspace = true }
+futures-util = { workspace = true }
 nectar-marker = { workspace = true }
 # Reference, ChunkRef, the positional sink vocabulary and the boxed-error
 # alias the erased seam reports through.
@@ -41,7 +42,7 @@ nectar-mantaray = { path = "../mantaray", features = ["manifest"] }
 
 [features]
 default = [ "std" ]
-std = [ "nectar-primitives/std", "nectar-tasks/std", "thiserror/std" ]
+std = [ "futures-util/std", "nectar-primitives/std", "nectar-tasks/std", "thiserror/std" ]
 # A dev shape, not a capability: the seam holds no crypto, so this is not
 # `encryption` and must never be named as one.
 test-encryption = [

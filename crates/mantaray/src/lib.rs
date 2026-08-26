@@ -15,7 +15,7 @@
 //!
 //! - [`Reader`]: depth-guarded point lookups ([`Reader::get`],
 //!   [`Reader::has_prefix`]) with `Ok(None)` on a miss.
-//! - [`Cursor`] and [`AddressStream`]: ordered listing with bounded
+//! - [`TrieListing`] and [`TrieAddressStream`]: ordered listing with bounded
 //!   read-ahead.
 //! - [`ManifestEditor`]: records puts and removes, then commits them in
 //!   submission order.
@@ -142,7 +142,7 @@ pub use constants::metadata;
 pub(crate) use constants::*;
 
 // Re-export public types.
-pub use cursor::{AddressStream, Cursor, Window};
+pub use cursor::{TrieAddressStream, TrieListing, Window};
 pub use editor::{ManifestEditor, Op};
 pub use entry::Entry;
 pub use error::{

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use nectar_ldb::{
-    Builder, Database, Entry, Key, Plaintext, Reader as LdbReader, Served, V1, Website,
+    Builder, Database, Entry, FolderServed, Key, Plaintext, Reader as LdbReader, V1, Website,
 };
 use nectar_manifest::{
     Batch, ListEntry, Manifest, ManifestCursor, ManifestError, ManifestMeta, ManifestOp,
@@ -610,16 +610,16 @@ fn website_documents_resolve_over_bare_keys() {
         assert_eq!(site.error(), Some(ERROR.as_bytes()), "error reads back");
 
         /// The key a request path resolved to, and how.
-        fn resolved(served: &Served<V1>) -> (&'static str, String) {
+        fn resolved(served: &FolderServed<V1>) -> (&'static str, String) {
             let key = served
                 .key()
                 .map(|key| String::from_utf8(key.as_bytes().to_vec()).unwrap())
                 .unwrap_or_default();
             let how = match served {
-                Served::Exact { .. } => "exact",
-                Served::Index { .. } => "index",
-                Served::Error { .. } => "error",
-                Served::Missing => "missing",
+                FolderServed::Exact { .. } => "exact",
+                FolderServed::Index { .. } => "index",
+                FolderServed::Error { .. } => "error",
+                FolderServed::Missing => "missing",
             };
             (how, key)
         }

@@ -3,7 +3,7 @@
 //! Pinning, garbage collection, integrity checks and whole-collection push
 //! treat a database as a chunk set. Key iteration yields entry references
 //! only; the trie's own node chunks, and the segment chunks a spilled node
-//! reassembles from, never surface there. [`AddressStream`] yields that full
+//! reassembles from, never surface there. [`ScanAddressStream`] yields that full
 //! closure: every node chunk, every segment chunk and each entry's referenced
 //! address. An encrypted database walks the same way: each reference carries
 //! the key that opens the chunk it names.
@@ -73,7 +73,7 @@ enum Advance<R: NodeRef> {
 /// the delivered turn rather than ending the walk. The walk advances inside
 /// `admit`, where the launch a fresh descent needs is reachable.
 #[derive(Debug)]
-pub struct AddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
+pub struct ScanAddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
     /// The root reference, pending its visit.
     root: Option<R>,
@@ -94,7 +94,7 @@ pub struct AddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     staged: Option<Turn>,
 }
 
-impl<'a, S, F, R> AddressStream<'a, S, F, R>
+impl<'a, S, F, R> ScanAddressStream<'a, S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -262,8 +262,8 @@ where
     /// Every chunk address the database rooted at `root` depends on, in
     /// depth-first key order.
     #[must_use]
-    pub fn addresses(&self, root: &R) -> AddressStream<'_, S, F, R> {
-        AddressStream::start(self.store(), root.clone())
+    pub fn addresses(&self, root: &R) -> ScanAddressStream<'_, S, F, R> {
+        ScanAddressStream::start(self.store(), root.clone())
     }
 }
 
@@ -303,7 +303,7 @@ mod tests {
         Prefix::try_from(bytes).unwrap()
     }
 
-    fn drain<S>(mut stream: AddressStream<'_, S>) -> Vec<ChunkAddress>
+    fn drain<S>(mut stream: ScanAddressStream<'_, S>) -> Vec<ChunkAddress>
     where
         S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     {
@@ -686,7 +686,7 @@ mod tests {
 
         /// Drain an encrypted-database address stream.
         fn drain_encrypted<S>(
-            mut stream: AddressStream<'_, S, V1, EncryptedChunkRef>,
+            mut stream: ScanAddressStream<'_, S, V1, EncryptedChunkRef>,
         ) -> Vec<ChunkAddress>
         where
             S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,

@@ -9,7 +9,9 @@ use std::collections::BTreeSet;
 
 use bytes::Bytes;
 use nectar_file::{File, Policy};
-use nectar_mantaray::{AddressStream, Cursor, ManifestEditor, NodeLoadSaver, NodeLoader, Reader};
+use nectar_mantaray::{
+    ManifestEditor, NodeLoadSaver, NodeLoader, Reader, TrieAddressStream, TrieListing,
+};
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ContentChunk};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{EntryRef, StandardChunkSet};
@@ -108,7 +110,7 @@ fn multi_chunk_root_commits_and_reads_back() {
         }
 
         // The listing yields all 256 paths in order.
-        let mut cursor = Cursor::new(loadsaver.clone(), root);
+        let mut cursor = TrieListing::new(loadsaver.clone(), root);
         let mut listed = Vec::new();
         while let Some(entry) = cursor.next().await {
             listed.push(entry.unwrap().path().to_vec());
@@ -140,7 +142,7 @@ fn multi_chunk_root_edits_through_the_adapter() {
 fn address_stream_covers_every_chunk_of_a_multi_chunk_node() {
     let (root, loadsaver) = build_wide();
     run(async {
-        let mut stream = AddressStream::new(loadsaver.clone(), root);
+        let mut stream = TrieAddressStream::new(loadsaver.clone(), root);
         let mut got = BTreeSet::new();
         while let Some(address) = stream.next().await {
             got.insert(address.unwrap());

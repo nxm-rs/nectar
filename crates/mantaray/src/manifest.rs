@@ -26,7 +26,7 @@ use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
 use nectar_primitives::store::{ContentGet, MaybeSend, MaybeSync, TrustedGet};
 
-use crate::cursor::Cursor;
+use crate::cursor::TrieListing;
 use crate::editor::ManifestEditor;
 use crate::error::{CursorError, EditorError, ReaderError};
 use crate::persist::NodeLoadSaver;
@@ -233,7 +233,7 @@ where
     /// to. An empty prefix walks the whole trie.
     fn walk(&self, prefix: &[u8]) -> TrieCursor<L, R> {
         TrieCursor {
-            cursor: Cursor::new(self.nodes.clone(), self.root.clone().into_entry_ref())
+            cursor: TrieListing::new(self.nodes.clone(), self.root.clone().into_entry_ref())
                 .with_prefix(prefix),
             _reference: core::marker::PhantomData,
         }
@@ -341,7 +341,7 @@ where
 /// walk is the seam's filter over a full one.
 #[derive(Debug)]
 pub struct TrieCursor<L, R: Reference> {
-    cursor: Cursor<L>,
+    cursor: TrieListing<L>,
     _reference: core::marker::PhantomData<R>,
 }
 

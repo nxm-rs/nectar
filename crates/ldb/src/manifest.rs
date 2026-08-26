@@ -1,5 +1,5 @@
 //! The [`Manifest`] seam, implemented directly on [`Database`], [`View`] and
-//! [`Cursor`]: keyed by path, reserved keys filtered, a checked batch folded
+//! [`ScanCursor`]: keyed by path, reserved keys filtered, a checked batch folded
 //! through one [`Database::edit`] changeset. Inherent methods win on the
 //! concrete types, so a seam call names the trait: `Manifest::at(&db, root)`.
 
@@ -21,12 +21,12 @@ use nectar_primitives::{Chunk, EntryRef};
 use crate::apply::ApplyError;
 use crate::builder::Builder;
 use crate::db::{Database, View};
-use crate::folder::{DirEntry, Served as NativeServed};
+use crate::folder::{DirEntry, FolderServed};
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, Metadata};
 use crate::node::{Node, NodeRef};
 use crate::reader::ReaderError;
-use crate::scan::Cursor;
+use crate::scan::ScanCursor;
 use crate::store::{Seal, StoreError, load_node, materialize_traced, save_node};
 use crate::value::{Entry, Key};
 
@@ -165,7 +165,7 @@ where
 
     type Error = ManifestError<LdbFormatError>;
 
-    type Cursor = PathCursor<Cursor<'a, S, V1, R>>;
+    type Cursor = PathCursor<ScanCursor<'a, S, V1, R>>;
 
     async fn get(&self, path: &ManifestPath) -> Result<Option<MapEntry<R>>, Self::Error> {
         let Some(key) = path.content_key().map(Key::from) else {
@@ -247,17 +247,17 @@ where
             return serve_fallback(self, path).await;
         }
         let served = match self.serve(&Key::from(path.as_bytes())).await? {
-            NativeServed::Exact { key, entry } => Served::Exact {
+            FolderServed::Exact { key, entry } => Served::Exact {
                 path: path_of(&key),
                 entry: seam_entry(entry),
             },
-            NativeServed::Index { key, entry } => Served::Index {
+            FolderServed::Index { key, entry } => Served::Index {
                 path: path_of(&key),
                 entry: seam_entry(entry),
             },
             // An error document set to a reserved path names no content,
             // exactly as the seam's own probe would read it.
-            NativeServed::Error { key, entry }
+            FolderServed::Error { key, entry }
                 if !ManifestPath::is_reserved_bytes(key.as_bytes()) =>
             {
                 Served::Error {
@@ -265,7 +265,7 @@ where
                     entry: seam_entry(entry),
                 }
             }
-            NativeServed::Error { .. } | NativeServed::Missing => Served::Missing,
+            FolderServed::Error { .. } | FolderServed::Missing => Served::Missing,
         };
         Ok(served)
     }
@@ -322,7 +322,7 @@ where
 
 /// The database's raw ordered walk: every stored key, the reserved slots
 /// included.
-impl<S, R> RawCursor<R> for Cursor<'_, S, V1, R>
+impl<S, R> RawCursor<R> for ScanCursor<'_, S, V1, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
     R: NodeRef,
@@ -330,7 +330,7 @@ where
     type Error = ManifestError<LdbFormatError>;
 
     async fn next(&mut self) -> Result<Option<RawItem<R>>, Self::Error> {
-        Ok(Cursor::next(self)
+        Ok(ScanCursor::next(self)
             .await?
             .map(|(key, entry)| (key.as_bytes().to_vec(), seam_entry(entry))))
     }

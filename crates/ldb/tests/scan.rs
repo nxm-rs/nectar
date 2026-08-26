@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use arbitrary::Unstructured;
 use bytes::Bytes;
-use nectar_ldb::{Builder, Cursor, Entry, Format, Key, Plaintext, Reader, V1, generators};
+use nectar_ldb::{Builder, Entry, Format, Key, Plaintext, Reader, ScanCursor, V1, generators};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
@@ -84,7 +84,7 @@ fn build(store: &MemoryStore) -> Result<(ChunkRef, Oracle)> {
 }
 
 /// Collect a whole cursor into an ordered vector.
-fn collect(mut cursor: Cursor<'_, &CountingStore>) -> Result<Rows> {
+fn collect(mut cursor: ScanCursor<'_, &CountingStore>) -> Result<Rows> {
     let mut out = Vec::new();
     while let Some((key, value)) = run(cursor.next())? {
         out.push((key.as_bytes().to_vec(), value));

@@ -21,7 +21,7 @@ use crate::format::{Format, V1};
 use crate::meta::{KeyId, MetadataKey};
 use crate::node::{Node, NodeRef};
 use crate::reader::{Reader, ReaderError};
-use crate::scan::{Cursor, successor};
+use crate::scan::{ScanCursor, successor};
 use crate::store::load_node;
 use crate::value::{Entry, Key};
 
@@ -68,7 +68,7 @@ impl<F: Format> DirEntry<F> {
 /// walk seeks past each named subtree rather than descending it, so a directory
 /// of any width or depth lists in O(depth) retained state and no value fetch.
 #[derive(Debug)]
-pub struct Listing<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
+pub struct FolderCursor<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
     root: R,
     /// The exclusive bound of the directory's prefix range.
@@ -82,10 +82,10 @@ pub struct Listing<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     dir_len: usize,
     /// Set once a named subtree has no successor, so the walk stops.
     done: bool,
-    cursor: Cursor<'a, S, F, R>,
+    cursor: ScanCursor<'a, S, F, R>,
 }
 
-impl<S, F, R> Listing<'_, S, F, R>
+impl<S, F, R> FolderCursor<'_, S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -124,7 +124,8 @@ where
                             // the shared base the delegated subtree omits.
                             let rel = start.get(self.base.len()..).unwrap_or(&[]);
                             self.cursor =
-                                Cursor::seek(self.store, &self.root, rel, self.end.clone()).await?;
+                                ScanCursor::seek(self.store, &self.root, rel, self.end.clone())
+                                    .await?;
                         }
                         None => self.done = true,
                     }
@@ -174,7 +175,7 @@ impl Website {
 
 /// What serving a request path resolves to under the website conventions.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Served<F: Format = V1> {
+pub enum FolderServed<F: Format = V1> {
     /// The path matched a key exactly.
     Exact {
         /// The matched key.
@@ -200,7 +201,7 @@ pub enum Served<F: Format = V1> {
     Missing,
 }
 
-impl<F: Format> Served<F> {
+impl<F: Format> FolderServed<F> {
     /// The resolved value, or `None` when nothing matched.
     #[must_use]
     pub const fn entry(&self) -> Option<&Entry<F>> {
@@ -236,7 +237,7 @@ where
     /// `dir` is used as a key prefix: the root is the empty key and a nested
     /// directory conventionally ends with the separator. Only the trie nodes on
     /// the frontier are fetched; the value chunks a listing names are not.
-    pub async fn dir(&self, root: &R, dir: &Key) -> Result<Listing<'_, S, F, R>, ReaderError> {
+    pub async fn dir(&self, root: &R, dir: &Key) -> Result<FolderCursor<'_, S, F, R>, ReaderError> {
         dir_at(self.store(), root, dir).await
     }
 
@@ -260,9 +261,9 @@ where
     /// The index document is a filename joined below each directory, so
     /// `"docs/"` resolves `"docs/index.html"`. The error document is one whole
     /// key: `"404.html"`.
-    pub async fn serve(&self, root: &R, path: &Key) -> Result<Served<F>, ReaderError> {
+    pub async fn serve(&self, root: &R, path: &Key) -> Result<FolderServed<F>, ReaderError> {
         if let Some(entry) = self.get(root, path).await? {
-            return Ok(Served::Exact {
+            return Ok(FolderServed::Exact {
                 key: path.clone(),
                 entry,
             });
@@ -271,28 +272,28 @@ where
         if let Some(index) = site.index {
             let key = directory_index::<F>(path.as_bytes(), &index);
             if let Some(entry) = self.get(root, &key).await? {
-                return Ok(Served::Index { key, entry });
+                return Ok(FolderServed::Index { key, entry });
             }
         }
         if let Some(error) = site.error {
             let key = Key::from(&error[..]);
             if let Some(entry) = self.get(root, &key).await? {
-                return Ok(Served::Error { key, entry });
+                return Ok(FolderServed::Error { key, entry });
             }
         }
-        Ok(Served::Missing)
+        Ok(FolderServed::Missing)
     }
 }
 
 /// One directory level over `store`, listed from the database rooted at `root`.
 ///
-/// The returned [`Listing`] keeps the caller's store reference, so it outlives
+/// The returned [`FolderCursor`] keeps the caller's store reference, so it outlives
 /// the handle it was opened through.
 pub(crate) async fn dir_at<'a, S, F, R>(
     store: &'a S,
     root: &R,
     dir: &Key,
-) -> Result<Listing<'a, S, F, R>, ReaderError>
+) -> Result<FolderCursor<'a, S, F, R>, ReaderError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -309,8 +310,8 @@ where
         && found.base == prefix.len()
     {
         let subtree = found.reference;
-        let cursor = Cursor::seek(store, &subtree, &[], None).await?;
-        return Ok(Listing {
+        let cursor = ScanCursor::seek(store, &subtree, &[], None).await?;
+        return Ok(FolderCursor {
             store,
             root: subtree,
             end: None,
@@ -321,8 +322,8 @@ where
         });
     }
     let end = successor(prefix);
-    let cursor = Cursor::seek(store, root, prefix, end.clone()).await?;
-    Ok(Listing {
+    let cursor = ScanCursor::seek(store, root, prefix, end.clone()).await?;
+    Ok(FolderCursor {
         store,
         root: root.clone(),
         end,
@@ -384,7 +385,7 @@ mod tests {
     }
 
     /// Drain a listing into its entries.
-    fn entries(mut listing: Listing<'_, &ContentGet<MemoryStore>>) -> Vec<DirEntry> {
+    fn entries(mut listing: FolderCursor<'_, &ContentGet<MemoryStore>>) -> Vec<DirEntry> {
         let mut out = Vec::new();
         while let Some(item) = run(listing.next()).unwrap() {
             out.push(item);
@@ -565,7 +566,7 @@ mod tests {
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"a.html"[..]))).unwrap(),
-            Served::Exact {
+            FolderServed::Exact {
                 key: Key::from(&b"a.html"[..]),
                 entry: entry(0x01),
             }
@@ -591,7 +592,7 @@ mod tests {
         // The root path resolves to the top-level index document.
         assert_eq!(
             run(reader.serve(&root, &Key::empty())).unwrap(),
-            Served::Index {
+            FolderServed::Index {
                 key: Key::from(&b"index.html"[..]),
                 entry: entry(0x01),
             }
@@ -599,7 +600,7 @@ mod tests {
         // A directory path (trailing separator) resolves to its index document.
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"docs/"[..]))).unwrap(),
-            Served::Index {
+            FolderServed::Index {
                 key: Key::from(&b"docs/index.html"[..]),
                 entry: entry(0x02),
             }
@@ -607,7 +608,7 @@ mod tests {
         // A directory path without a trailing separator is read as one too.
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"docs"[..]))).unwrap(),
-            Served::Index {
+            FolderServed::Index {
                 key: Key::from(&b"docs/index.html"[..]),
                 entry: entry(0x02),
             }
@@ -627,7 +628,7 @@ mod tests {
 
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"missing"[..]))).unwrap(),
-            Served::Error {
+            FolderServed::Error {
                 key: Key::from(&b"404.html"[..]),
                 entry: entry(0x09),
             }
@@ -641,7 +642,7 @@ mod tests {
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"nope"[..]))).unwrap(),
-            Served::Missing
+            FolderServed::Missing
         );
     }
 
@@ -702,7 +703,7 @@ mod tests {
         }
     }
 
-    fn entries_counting(mut listing: Listing<'_, &CountingStore>) -> Vec<DirEntry> {
+    fn entries_counting(mut listing: FolderCursor<'_, &CountingStore>) -> Vec<DirEntry> {
         let mut out = Vec::new();
         while let Some(item) = run(listing.next()).unwrap() {
             out.push(item);

@@ -96,7 +96,7 @@ type Turn<F> = Result<Option<(Key, Entry<F>)>, ReaderError>;
 /// the delivered turn rather than ending the walk. The walk advances inside
 /// `admit`, where the launch a fresh descent needs is reachable.
 #[derive(Debug)]
-pub struct Cursor<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
+pub struct ScanCursor<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
     /// One frame per referenced hop on the current path.
     stack: Vec<Frame<F, R>>,
@@ -128,7 +128,7 @@ enum Advance<F: Format> {
     Descend(Vec<u8>, Option<usize>),
 }
 
-impl<'a, S, F, R> Cursor<'a, S, F, R>
+impl<'a, S, F, R> ScanCursor<'a, S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -394,8 +394,8 @@ where
     R: NodeRef,
 {
     /// Every `(key, value)` in ascending key order.
-    pub async fn iter(&self, root: &R) -> Result<Cursor<'_, S, F, R>, ReaderError> {
-        Cursor::seek(self.store(), root, &[], None).await
+    pub async fn iter(&self, root: &R) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
+        ScanCursor::seek(self.store(), root, &[], None).await
     }
 
     /// Every `(key, value)` within `bounds`, in ascending key order. Keys
@@ -404,18 +404,22 @@ where
         &self,
         root: &R,
         bounds: impl RangeBounds<Key>,
-    ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
         let (start, end) = half_open(&bounds);
-        Cursor::seek(self.store(), root, &start, end).await
+        ScanCursor::seek(self.store(), root, &start, end).await
     }
 
     /// Every `(key, value)` whose key starts with `prefix`, in ascending order.
     ///
     /// The prefix range is `[prefix, successor(prefix))`; an all-`0xFF` or empty
     /// prefix has no successor and the scan runs unbounded to the last key.
-    pub async fn prefix(&self, root: &R, prefix: &Key) -> Result<Cursor<'_, S, F, R>, ReaderError> {
+    pub async fn prefix(
+        &self,
+        root: &R,
+        prefix: &Key,
+    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
         let end = successor(prefix.as_bytes());
-        Cursor::seek(self.store(), root, prefix.as_bytes(), end).await
+        ScanCursor::seek(self.store(), root, prefix.as_bytes(), end).await
     }
 
     /// The greatest key `<= key` and its value, or `None` when every key is
@@ -660,7 +664,7 @@ mod tests {
         Prefix::try_from(bytes).unwrap()
     }
 
-    fn drain(mut cursor: Cursor<'_, &ContentGet<MemoryStore>>) -> Vec<(Vec<u8>, Entry)> {
+    fn drain(mut cursor: ScanCursor<'_, &ContentGet<MemoryStore>>) -> Vec<(Vec<u8>, Entry)> {
         let mut out = Vec::new();
         while let Some((key, value)) = run(cursor.next()).unwrap() {
             out.push((key.as_bytes().to_vec(), value));
