@@ -78,6 +78,11 @@ The **name** vocabulary and the **api shape** freeze together at M2, because a c
 The **wire** formats are already frozen by reference-client interop and are only being documented, not decided.
 The **crate set** cannot freeze until the carve finishes, which is why the release paperwork is last.
 
+The word `sync` in a consumer-facing name has one allowed shape: a suffix that marks the non-async variant of an existing trait, as in `ChunkGetSync`.
+It is never a prefix, a module, a bare noun, or a method verb; in those shapes the word belongs to the inter-node domain, where it names the synchronisation of chunk reserves between nodes.
+The standard `Sync` auto-trait appears in a name only as the `MaybeSend`/`MaybeSync` marker pair.
+The existing `nectar_file::sync` driver module is an exception, and it renames with the file crate vocabulary work.
+
 Two consequences for ordering, both from how the tooling works.
 `#[non_exhaustive]` must be applied before M2, because adding it is itself a breaking change.
 Sealing the extension-point traits during the api-crate creation converts a later method addition from breaking to additive, and the tooling recognises sealed traits, so the benefit is machine-visible rather than a convention.
