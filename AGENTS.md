@@ -26,6 +26,10 @@ Prefer them for new code, and align existing code when you touch it.
   Every fan-out consumer runs on `futures_util::stream::FuturesUnordered` plus a thin bounded-admission governor.
   Delete reinvented machinery.
   Do not extend it.
+- Declare asynchronous seams in one shape.
+  A seam method that produces a future returns it inline (`impl Future`), and the future is bounded by `MaybeSend`.
+  A hard `Send` bound breaks a wasm consumer, and an unbounded future cannot be spawned on a multi-threaded executor.
+  A seam whose operations wait on nothing stays synchronous.
 - Name a surface after what it is: a map, or structured content.
   A map speaks the `HashMap` vocabulary.
   The content-addressed pool is a map whose key is the hash of the value, so the chunk store keeps `get`, `put` and `has` over the store traits in `nectar-primitives::store`.

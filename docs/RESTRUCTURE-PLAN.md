@@ -221,6 +221,9 @@ Only that one step is red at a commit boundary; every other move is green if the
 
 The seams reach their final shape in the same milestone, because these crates are being written fresh.
 The presence verb is deleted from the asynchronous seam and the get error is classified in the same change: the protocol has no wire presence verb, so a networked negative is always manufactured, and a three-valued answer does not fix it.
+The asynchronous seams settle on one convention: a future-carrying method returns its future inline (`impl Future`), and the future is bounded by `MaybeSend`.
+A hard `Send` bound makes a seam unusable on wasm, and an unbounded future cannot be spawned on a multi-threaded executor.
+A seam whose operations wait on nothing stays synchronous: the batch store, the ingest handler and the issuance seam run inside a synchronous transaction, and their out-of-tree implementors bind the synchronous shape.
 The synchronous store seam lands keyed on the address, the batch and the stamp hash, because one address holds many stamps.
 The put unit gains a validation type.
 Positional IO adopts the standard traits, and the name `Sink` is reserved for types that implement the standard trait.
@@ -229,7 +232,7 @@ The cursors become streams, which both formats already have the machinery for an
 `fuzz/` is a separate workspace with its own lock file, so `cargo check --workspace` never covers it.
 Several of these moves break it silently, and its check must run per car.
 
-**Exit gate.** No crate depends on a crate above its tier. The seam crate no longer dev-depends on its own implementors. No presence verb on the asynchronous seam. Every public store error answers whether an absence is definite. Every cursor is a stream, and every type named `Sink` implements the standard trait. The facade reaches the eight hot items in one import.
+**Exit gate.** No crate depends on a crate above its tier. The seam crate no longer dev-depends on its own implementors. No presence verb on the asynchronous seam. Every public store error answers whether an absence is definite. Every future-carrying seam returns an `impl Future` bounded by `MaybeSend`, with no hard `Send` and no unbounded future. Every cursor is a stream, and every type named `Sink` implements the standard trait. The facade reaches the eight hot items in one import.
 
 ### M3. Generics final
 
