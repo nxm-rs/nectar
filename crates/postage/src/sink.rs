@@ -79,7 +79,7 @@ mod tests {
 
     use arbitrary::Unstructured;
     use nectar_primitives::{
-        Chunk, ChunkAddress, ChunkHas, ContentChunk, DEFAULT_BODY_SIZE, MemoryStore, PutUnit, Tee,
+        Chunk, ChunkAddress, ContentChunk, DEFAULT_BODY_SIZE, MemoryStore, PutUnit, Tee,
     };
     use nectar_testing::run;
 
@@ -162,7 +162,7 @@ mod tests {
             let address = *pair.address();
 
             sink.put(pair).await.expect("infallible put");
-            assert!(store.has(&address).await);
+            assert!(store.get(&address).is_some());
         });
     }
 
@@ -175,7 +175,7 @@ mod tests {
             let address = *pair.address();
 
             sink.put(pair).await.expect("infallible put");
-            assert!(store.has(&address).await);
+            assert!(store.get(&address).is_some());
         });
     }
 
@@ -189,7 +189,7 @@ mod tests {
             let address = *pair.address();
 
             tee.put(pair).await.expect("both legs accept");
-            assert!(store.has(&address).await);
+            assert!(store.get(&address).is_some());
             assert_eq!(*recorder.seen.lock().expect("recording lock"), [address]);
         });
     }

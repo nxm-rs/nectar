@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, Verified};
 
 use super::ChunkStoreError;
-use super::typed::{ChunkGet, ChunkHas, ChunkPut};
+use super::typed::{ChunkGet, ChunkPut};
 
 /// Single-threaded stand-in for `RwLock`, keyed on `multi_thread` like the
 /// `MaybeSend`/`MaybeSync` bounds, not on `std`: a `RefCell` is `!Sync` and
@@ -127,12 +127,6 @@ impl<R: ChunkRegistry> ChunkGet<R> for MemoryStore<R> {
     }
 }
 
-impl<R: ChunkRegistry> ChunkHas for MemoryStore<R> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        self.chunks.read().contains_key(address)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,7 +144,10 @@ mod tests {
 
         run(ChunkPut::put(&store, sealed)).unwrap();
         assert_eq!(store.len(), 1);
-        assert!(run(ChunkHas::has(&store, &addr)));
         assert_eq!(store.get(&addr).map(|c| *c.address()), Some(addr));
+        // A miss is the medium's own absence answer, classified as such.
+        let miss = run(ChunkGet::get(&store, &ChunkAddress::default())).unwrap_err();
+        assert!(miss.is_definitely_absent());
+        assert!(!miss.is_transient());
     }
 }

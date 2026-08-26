@@ -14,8 +14,9 @@
 use std::fmt;
 use std::time::Duration;
 
-use super::typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit};
+use super::typed::{ChunkGet, ChunkPut, PutUnit};
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry};
+use crate::error::StoreError;
 use crate::marker::{MaybeSend, MaybeSync};
 use nectar_tasks::Sleeper;
 
@@ -78,10 +79,10 @@ fn jitter_unit(address: &ChunkAddress) -> f64 {
 /// [`ChunkGet`] decorator that retries transient `get` failures with capped
 /// exponential backoff and jitter, sleeping through an injected [`Sleeper`].
 ///
-/// Retries on any error since the inner error type is opaque here; a genuinely
-/// unretrievable chunk still fails, but only after the attempt budget is spent.
-/// `put` and `has` delegate to the inner store untouched. `Clone` is cheap when
-/// `G` and `S` are.
+/// Retries while the failure is classified transient; a definite miss or a
+/// terminal failure propagates at once, so spending the attempt budget no
+/// longer turns a miss into eight retries. `put` delegates to the inner store
+/// untouched. `Clone` is cheap when `G` and `S` are.
 #[derive(Clone)]
 pub struct RetryingChunkGet<G, S> {
     inner: G,
@@ -125,10 +126,10 @@ impl<R: ChunkRegistry, G: ChunkGet<R>, S: Sleeper> ChunkGet<R> for RetryingChunk
         loop {
             match self.inner.get(address).await {
                 Ok(chunk) => return Ok(chunk),
-                Err(e) => {
-                    if attempt >= self.config.max_attempts {
-                        return Err(e);
-                    }
+                Err(error) if attempt >= self.config.max_attempts || !error.is_transient() => {
+                    return Err(error);
+                }
+                Err(_) => {
                     self.sleeper
                         .sleep(self.config.backoff_for(attempt, address))
                         .await;
@@ -147,12 +148,6 @@ impl<U: PutUnit, G: ChunkPut<U>, S: MaybeSend + MaybeSync> ChunkPut<U> for Retry
     }
 }
 
-impl<G: ChunkHas, S: MaybeSend + MaybeSync> ChunkHas for RetryingChunkGet<G, S> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        self.inner.has(address).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +159,7 @@ mod tests {
 
     use crate::DefaultContentChunk;
     use crate::chunk::{StandardChunkSet, Verified};
+    use crate::error::{ChunkStoreError, StoreError};
 
     /// A [`Sleeper`] that returns immediately, so tests never wait real time.
     struct NoSleep;
@@ -176,14 +172,23 @@ mod tests {
     #[error("transient")]
     struct Transient;
 
+    impl StoreError for Transient {
+        fn is_definitely_absent(&self) -> bool {
+            false
+        }
+
+        fn is_transient(&self) -> bool {
+            true
+        }
+    }
+
     /// A store that fails its first `remaining_failures` gets then succeeds,
-    /// counting every `get`, `put`, and `has` call.
+    /// counting every `get` and `put` call.
     struct FlakyStore {
         chunk: Chunk,
         remaining_failures: Mutex<u32>,
         get_calls: AtomicU32,
         put_calls: AtomicU32,
-        has_calls: AtomicU32,
     }
 
     impl FlakyStore {
@@ -195,7 +200,6 @@ mod tests {
                 remaining_failures: Mutex::new(remaining_failures),
                 get_calls: AtomicU32::new(0),
                 put_calls: AtomicU32::new(0),
-                has_calls: AtomicU32::new(0),
             }
         }
     }
@@ -224,10 +228,15 @@ mod tests {
         }
     }
 
-    impl ChunkHas for FlakyStore {
-        async fn has(&self, _address: &ChunkAddress) -> bool {
-            self.has_calls.fetch_add(1, Ordering::SeqCst);
-            true
+    /// A store that answers every get with the medium's own absence.
+    struct MissStore;
+
+    impl ChunkGet<StandardChunkSet> for MissStore {
+        type Trust = Verified;
+        type Error = ChunkStoreError;
+
+        async fn get(&self, address: &ChunkAddress) -> Result<Chunk, Self::Error> {
+            Err(ChunkStoreError::not_found(address))
         }
     }
 
@@ -257,13 +266,56 @@ mod tests {
     }
 
     #[test]
-    fn put_and_has_are_not_retried() {
+    fn put_is_not_retried() {
         let store = RetryingChunkGet::with_default(FlakyStore::new(u32::MAX), NoSleep);
-        let address = *store.inner.chunk.address();
 
-        assert!(run(store.has(&address)));
         run(store.put(store.inner.chunk.clone())).expect("put delegates");
-        assert_eq!(store.inner.has_calls.load(Ordering::SeqCst), 1);
         assert_eq!(store.inner.put_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A definite miss is not a failure to retry: it propagates on the first
+    /// get instead of spending the attempt budget.
+    #[test]
+    fn definite_miss_propagates_without_retrying() {
+        let store = RetryingChunkGet::with_default(MissStore, NoSleep);
+        let address = ChunkAddress::default();
+
+        let error = run(store.get(&address)).expect_err("the miss propagates");
+        assert!(error.is_definitely_absent());
+    }
+
+    /// A failure that is neither transient nor a miss is terminal: it
+    /// propagates on the first get instead of spending the attempt budget.
+    #[test]
+    fn terminal_failure_propagates_without_retrying() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("terminal")]
+        struct Terminal;
+
+        impl StoreError for Terminal {
+            fn is_definitely_absent(&self) -> bool {
+                false
+            }
+
+            fn is_transient(&self) -> bool {
+                false
+            }
+        }
+
+        struct TerminalStore;
+
+        impl ChunkGet<StandardChunkSet> for TerminalStore {
+            type Trust = Verified;
+            type Error = Terminal;
+
+            async fn get(&self, _address: &ChunkAddress) -> Result<Chunk, Self::Error> {
+                Err(Terminal)
+            }
+        }
+
+        let store = RetryingChunkGet::with_default(TerminalStore, NoSleep);
+        let error = run(store.get(&ChunkAddress::default())).expect_err("terminal propagates");
+        assert!(!error.is_definitely_absent());
+        assert!(!error.is_transient());
     }
 }

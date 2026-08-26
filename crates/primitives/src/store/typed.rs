@@ -1,13 +1,16 @@
 //! Typed chunk storage traits.
 //!
-//! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
-//! `MaybeSync` bounds (on the traits and their error types) so a store may be
-//! `!Send` on single-threaded targets. Trust is a property of the read medium,
-//! declared once per backend through [`ChunkGet::Trust`].
+//! `ChunkGet` and `ChunkPut` are async and carry `MaybeSend`/`MaybeSync`
+//! bounds (on the traits and their error types) so a store may be `!Send` on
+//! single-threaded targets. The seam error is classified through
+//! [`StoreError`], so a generic consumer separates a definite miss from a
+//! failure. Trust is a property of the read medium, declared once per
+//! backend through [`ChunkGet::Trust`].
 
 use core::future::Future;
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, TrustState, Verified};
+use crate::error::StoreError;
 use crate::marker::{MaybeSend, MaybeSync};
 
 /// Async chunk retrieval (primary API).
@@ -20,7 +23,7 @@ pub trait ChunkGet<R: ChunkRegistry = StandardChunkSet>: MaybeSend + MaybeSync {
     type Trust: TrustState;
 
     /// Error type for get operations.
-    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
+    type Error: StoreError;
 
     /// Get a chunk by address.
     fn get(
@@ -53,24 +56,6 @@ impl<R: ChunkRegistry, T: ChunkGet<R> + ?Sized> ChunkGet<R> for alloc::sync::Arc
     }
 }
 
-/// Async chunk existence check (primary API).
-pub trait ChunkHas: MaybeSend + MaybeSync {
-    /// Check if a chunk exists.
-    fn has(&self, address: &ChunkAddress) -> impl Future<Output = bool> + MaybeSend;
-}
-
-impl<T: ChunkHas + ?Sized> ChunkHas for &T {
-    fn has(&self, address: &ChunkAddress) -> impl Future<Output = bool> + MaybeSend {
-        (**self).has(address)
-    }
-}
-
-impl<T: ChunkHas + ?Sized> ChunkHas for alloc::sync::Arc<T> {
-    fn has(&self, address: &ChunkAddress) -> impl Future<Output = bool> + MaybeSend {
-        (**self).has(address)
-    }
-}
-
 /// What a [`ChunkPut`] moves. Not sealed, so whether a unit wraps a verified
 /// chunk is a property of the chosen `U`, not of the trait.
 pub trait PutUnit: MaybeSend + 'static {
@@ -90,7 +75,7 @@ impl<R: ChunkRegistry> PutUnit for Chunk<Verified, R> {
 /// Implementors should use interior mutability (e.g. `Mutex`, `RwLock`).
 pub trait ChunkPut<U: PutUnit = Chunk<Verified>>: MaybeSend + MaybeSync {
     /// Error type for put operations.
-    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
+    type Error: StoreError;
 
     /// Store one unit.
     fn put(&self, unit: U) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
@@ -135,6 +120,16 @@ mod send_sync_relaxation_proof {
     #[derive(Debug, thiserror::Error)]
     #[error("not send")]
     struct NotSendError(core::marker::PhantomData<*const ()>);
+
+    impl StoreError for NotSendError {
+        fn is_definitely_absent(&self) -> bool {
+            false
+        }
+
+        fn is_transient(&self) -> bool {
+            false
+        }
+    }
 
     impl ChunkGet<StandardChunkSet> for NotSendSync {
         type Trust = Unverified;

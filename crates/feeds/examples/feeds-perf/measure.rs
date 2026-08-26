@@ -40,8 +40,9 @@ pub enum FinderKind {
 pub struct Cell {
     pub n: u64,
     pub width: usize,
-    /// Concurrent probe batches until the boundary committed: the
-    /// latency-critical figure, one network round trip each.
+    /// Concurrent probe batches until the boundary committed, plus the
+    /// certified retrieval of the committed update: the latency-critical
+    /// figure, one network round trip each.
     pub rounds: u64,
     /// Presence probes issued, speculation included: the chunks-required
     /// figure.
@@ -86,7 +87,7 @@ pub fn measure(
     width: NonZeroUsize,
 ) -> Result<Cell, Err> {
     block_on_paused(async {
-        let store = ProbeStore::new(corpus, n).await?;
+        let store = ProbeStore::new(corpus, n)?;
         let reader = Reader::new(corpus.feed(), &store).with_window(width);
         let t0 = tokio::time::Instant::now();
         let latest = match kind {
@@ -95,13 +96,14 @@ pub fn measure(
         };
         let rounds = t0.elapsed().as_millis() as u64;
         let counts = store.counts();
+        let verified = u64::from(latest.update.is_some());
         Ok::<_, Err>(Cell {
             n,
             width: width.get(),
             rounds,
-            total_probes: counts.has_calls,
+            total_probes: counts.gets - verified,
             wasted_probes: counts.absent,
-            verified_gets: counts.gets,
+            verified_gets: verified,
             committed: latest.update.map(|update| update.index().get()),
             next: latest.next.map(|seq| seq.get()),
         })
@@ -160,7 +162,9 @@ mod tests {
             for n in [1u64, 2, 3, 10, 100, 1_000] {
                 for w in WIDTHS {
                     let cell = cell(&corpus, kind, n, w);
-                    assert!(cell.rounds <= cell.total_probes, "{kind:?} n={n} w={w}");
+                    // One certified retrieval round trip follows the probe
+                    // batches, so the bound is probes plus one.
+                    assert!(cell.rounds <= cell.total_probes + 1, "{kind:?} n={n} w={w}");
                     assert!(cell.rounds >= 1, "{kind:?} n={n} w={w}");
                     assert_eq!(cell.committed, Some(n - 1), "{kind:?} n={n} w={w}");
                     assert_eq!(cell.next, Some(n), "{kind:?} n={n} w={w}");
@@ -179,11 +183,11 @@ mod tests {
         for n in [1u64, 2, 3, 4, 5, 10, 100, 127, 128, 129, 1_000] {
             let probing = cell(&corpus, FinderKind::Probing, n, 1);
             assert_eq!(probing.total_probes, sequential_probe_count(n), "n={n}");
-            assert_eq!(probing.rounds, probing.total_probes, "n={n}");
+            assert_eq!(probing.rounds, probing.total_probes + 1, "n={n}");
 
             let stepwise = cell(&corpus, FinderKind::Stepwise, n, 1);
             assert_eq!(stepwise.total_probes, n + 1, "n={n}");
-            assert_eq!(stepwise.rounds, n + 1, "n={n}");
+            assert_eq!(stepwise.rounds, stepwise.total_probes + 1, "n={n}");
             assert_eq!(stepwise.wasted_probes, 1, "n={n}");
         }
     }
@@ -199,9 +203,11 @@ mod tests {
 
         let sequential = cell(&corpus, FinderKind::Probing, N, 1);
         assert_eq!(sequential.total_probes, sequential_probe_count(N));
-        assert_eq!(sequential.rounds, sequential.total_probes);
+        assert_eq!(sequential.rounds, sequential.total_probes + 1);
 
-        for (w, band) in [(16usize, 4..=9), (64usize, 3..=6)] {
+        // Each band sits one round trip past the probe-only bands: the
+        // certified retrieval of the committed update.
+        for (w, band) in [(16usize, 5..=10), (64usize, 4..=7)] {
             let cell = cell(&corpus, FinderKind::Probing, N, w);
             assert!(
                 band.contains(&cell.rounds),

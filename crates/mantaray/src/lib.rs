@@ -184,4 +184,4 @@ pub mod hazmat {
 
 // Re-export typed storage traits from primitives.
 pub use nectar_primitives::DefaultMemoryStore;
-pub use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore, TrustedGet};
+pub use nectar_primitives::store::{ChunkGet, ChunkPut, MemoryStore, TrustedGet};

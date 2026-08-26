@@ -1,18 +1,20 @@
 //! Pure replay resolvers and probe planning for the windowed finders.
 //!
 //! A resolver replays a sequential scan's decision procedure over a map of
-//! completed presence answers and faults on the first index it consults
-//! without one. The driver keeps a bounded window of probes in flight,
-//! absorbing each answer as it lands and re-resolving; speculative answers
-//! the replay never consults are inert, so any window width and any
-//! completion order commit the boundary the sequential scan would.
+//! completed probe answers and faults on the first index it consults without
+//! one. An answer that is `false` is the store's own definitively absent
+//! report; any other failure aborts the search at the driver. The driver
+//! keeps a bounded window of probes in flight, absorbing each answer as it
+//! lands and re-resolving; speculative answers the replay never consults are
+//! inert, so any window width and any completion order commit the boundary
+//! the sequential scan would.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use core::num::NonZeroUsize;
 
-/// Completed presence answers by index. Only a completed answer may enter;
-/// an absent key is "not yet asked", never "absent".
+/// Completed probe answers by index. Only a completed answer may enter; an
+/// absent key is "not yet asked", never "absent".
 pub(crate) type Answers = BTreeMap<u64, bool>;
 
 /// One replay outcome over a fixed answer map.

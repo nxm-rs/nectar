@@ -3,6 +3,7 @@
 use core::num::NonZeroUsize;
 
 use nectar_postage::StampError;
+use nectar_primitives::StoreError;
 
 use crate::error::SigningError;
 
@@ -49,4 +50,22 @@ pub enum StampedPutError<E> {
     /// An earlier failure has already surfaced; the decorator is shut.
     #[error("stamping is poisoned by an earlier failure")]
     Poisoned,
+}
+
+impl<E: StoreError> StoreError for StampedPutError<E> {
+    /// Only the put leg names a medium condition; a refused allocation, a
+    /// failed signature or a poisoned decorator is terminal.
+    fn is_definitely_absent(&self) -> bool {
+        match self {
+            Self::Put(error) => error.is_definitely_absent(),
+            Self::Stamp(_) | Self::Sign(_) | Self::Poisoned => false,
+        }
+    }
+
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Put(error) => error.is_transient(),
+            Self::Stamp(_) | Self::Sign(_) | Self::Poisoned => false,
+        }
+    }
 }

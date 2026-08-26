@@ -1,7 +1,7 @@
 //! Drive the finder lookup-cost measurements across every
 //! `(finder, length, width)` and write one JSON result document. Every
 //! number is a measured work count; rounds are read off the real windowed
-//! finder under a paused virtual clock, one tick per presence probe.
+//! finder under a paused virtual clock, one tick per retrieval.
 //!
 //! Run: `cargo run -p nectar-feeds --example feeds-perf`
 #![allow(
@@ -63,9 +63,9 @@ fn parse_args() -> Args {
 fn caveats() -> Vec<String> {
     vec![
         "Every figure is a measured work count from driving the real reader over a counting \
-presence store; nothing is wall time. rounds is elapsed virtual time under a paused clock with \
-one tick per presence probe, so the probes of one concurrent batch collapse into one round, and \
-one round is one network round trip."
+probe store; nothing is wall time. rounds is elapsed virtual time under a paused clock with \
+one tick per retrieval, probe and certified commit alike, so the probes of one concurrent \
+batch collapse into one round, and one round is one network round trip."
             .to_string(),
         "total_probes counts presence probes, speculation included: the chunks required for the \
 lookup. wasted_probes counts probes answered absent (at or past the first free slot); the \
@@ -83,10 +83,11 @@ those cells is quadratic even though the finder's own probe and round counts are
 keccak(topic || index) id, keccak(id || owner) address); the comparison is lookup strategy only."
             .to_string(),
         "The reference series is a faithful port of the reference client's concurrent finder \
-(fixed eight-way lookahead at offsets 2^k - 1 per interval) driven over the same presence store. \
-In the original every probe is a full retrieval with absence inferred from a timeout, so \
-presence probes stand in and verified_gets is zero; its probe cost is understated relative to \
-the nectar cells on that account, never overstated."
+(fixed eight-way lookahead at offsets 2^k - 1 per interval) driven over the same probe store. \
+In the original every probe is a full retrieval with absence inferred from a timeout; the port \
+pays the same full-retrieval cost per probe and only its absence detection is free, a \
+classified not-found against the timeout. verified_gets is zero because the port never \
+certifies."
             .to_string(),
     ]
 }
@@ -115,8 +116,8 @@ wasted_probes."
         "Where the reference is better or equal: on a feed a few updates long a wide window here \
 speculates far up the ladder and wastes more probes than the reference's fixed eight lookaheads \
 (see wasted_probes at n = 1, width = 64), a probe-count loss bounded by one window; rounds are \
-never worse. Presence probes are also cheaper than the reference's full retrievals and answer \
-absence explicitly rather than by timeout, which the counts here do not credit."
+never worse. Both now pay the full-retrieval cost per probe; the difference is absence \
+detection, a classified not-found against a timeout, which the counts do not credit."
             .to_string(),
         "The per-length verdicts and the measured comparison table live in results/COMPARISON.md \
 next to this document."

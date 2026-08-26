@@ -1,8 +1,9 @@
 //! Content-only narrowing store adapter.
 
 use crate::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
+use crate::error::StoreError;
 
-use super::typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit};
+use super::typed::{ChunkGet, ChunkPut, PutUnit};
 
 /// Content-only view over a store typed at [`AnyChunkSet`].
 ///
@@ -67,9 +68,22 @@ impl<U: PutUnit, T: ChunkPut<U>> ChunkPut<U> for ContentGet<T> {
     }
 }
 
-impl<T: ChunkHas> ChunkHas for ContentGet<T> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        self.0.has(address).await
+impl<E: StoreError> StoreError for ContentGetError<E> {
+    /// The narrowing never fails a miss and never turns one into a hit, so
+    /// the inner classification passes through; a type mismatch is a
+    /// terminal failure, not an absence.
+    fn is_definitely_absent(&self) -> bool {
+        match self {
+            Self::Inner(error) => error.is_definitely_absent(),
+            Self::NotContent(..) => false,
+        }
+    }
+
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Inner(error) => error.is_transient(),
+            Self::NotContent(..) => false,
+        }
     }
 }
 
@@ -113,5 +127,31 @@ mod tests {
             run(ChunkGet::get(&narrow, &ChunkAddress::default())),
             Err(ContentGetError::Inner(ChunkStoreError::NotFound(_)))
         ));
+    }
+
+    /// New variants must be classified, so the match stays exhaustive; the
+    /// predicates stay mutually exclusive per variant.
+    #[test]
+    fn every_variant_is_classified_into_exactly_one_group() {
+        let miss = ContentGetError::Inner(ChunkStoreError::not_found(&ChunkAddress::default()));
+        let mistyped = ContentGetError::NotContent(ChunkAddress::default());
+        for error in [miss, mistyped] {
+            let absent = StoreError::is_definitely_absent(&error);
+            let transient = StoreError::is_transient(&error);
+            match &error {
+                ContentGetError::Inner(inner) => {
+                    assert_eq!(
+                        (absent, transient),
+                        (inner.is_definitely_absent(), inner.is_transient()),
+                        "the narrowing passes the inner classification through"
+                    );
+                    assert!(!(absent && transient), "the groups stay exclusive");
+                }
+                ContentGetError::NotContent(..) => {
+                    assert!(!absent, "a type mismatch is not an absence answer");
+                    assert!(!transient, "a type mismatch is not retryable");
+                }
+            }
+        }
     }
 }

@@ -1,8 +1,10 @@
 //! Chunk storage traits and implementations.
 //!
-//! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
-//! `MaybeSync` bounds so a store may be `!Send` on single-threaded targets
-//! (wasm32, bare metal, or any target under the `unsync` feature).
+//! `ChunkGet` and `ChunkPut` are async and carry `MaybeSend`/`MaybeSync`
+//! bounds so a store may be `!Send` on single-threaded targets (wasm32, bare
+//! metal, or any target under the `unsync` feature). The seam error is
+//! classified through `StoreError`, so a definite miss never reads as a
+//! failure and vice versa.
 
 mod content;
 mod memory;
@@ -20,14 +22,15 @@ pub use nectar_tasks::Sleeper;
 #[cfg(feature = "std")]
 pub use retry::{RetryConfig, RetryingChunkGet};
 pub use tee::{Tee, TeeError};
-pub use typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit, TrustedGet};
+pub use typed::{ChunkGet, ChunkPut, PutUnit, TrustedGet};
 pub use verify::{VerifyError, VerifyingStore};
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 
-// The store error and its boxed aliases are defined in the core crate because
-// `PrimitivesError` wraps them; the stores themselves are here.
-pub use nectar_primitives_core::error::{BoxedError, ChunkStoreError, SharedError};
+// The store error family and its classification are defined in the core
+// crate because `PrimitivesError` wraps them; the stores themselves are
+// here.
+pub use nectar_primitives_core::error::{BoxedError, ChunkStoreError, SharedError, StoreError};
 
 /// A no-op loader that always returns [`ChunkStoreError::NotFound`].
 ///

@@ -17,7 +17,7 @@ use nectar_feeds::{Feed, FeedError, Index, Latest, Publisher, Reader, Sequence, 
 use nectar_primitives::chunk::{
     ChunkAddress, ChunkOps, SingleOwnerOnlyChunkSet, TrustedSource, Unverified,
 };
-use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkStoreError, MemoryStore};
+use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore};
 use nectar_primitives::{
     Chunk, ChunkRegistry, DEFAULT_BODY_SIZE, DefaultContentChunk, StandardChunkSet,
 };
@@ -206,12 +206,6 @@ impl ChunkGet<SingleOwnerOnlyChunkSet> for Unverifying<'_> {
     }
 }
 
-impl ChunkHas for Unverifying<'_> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        ChunkHas::has(self.0, address).await
-    }
-}
-
 #[test]
 fn unverified_reads_are_certified() {
     run(async {
@@ -346,9 +340,9 @@ fn windowed_finders_agree_with_sequential() {
     });
 }
 
-/// Probe-completion gate: a `has` probe parks by address until the test
-/// grants it, so completion order is the caller's, not the store's. Records
-/// the high-water mark of concurrently parked probes.
+/// Probe-completion gate: a probe get parks by address until the test grants
+/// it, so completion order is the caller's, not the store's. Records the
+/// high-water mark of concurrently parked probes.
 #[derive(Clone, Default)]
 struct Gate {
     inner: Arc<Mutex<GateInner>>,
@@ -395,21 +389,24 @@ impl Gate {
     }
 }
 
-/// A `has` probe parked on the gate; resolves once its address is granted.
-struct HasProbe {
+/// A probe get parked on the gate; resolves once its address is granted.
+struct GetProbe {
     address: ChunkAddress,
-    present: bool,
+    answer: Option<
+        Result<Chunk<nectar_primitives::Verified, SingleOwnerOnlyChunkSet>, ChunkStoreError>,
+    >,
     gate: Gate,
 }
 
-impl Future for HasProbe {
-    type Output = bool;
+impl Future for GetProbe {
+    type Output =
+        Result<Chunk<nectar_primitives::Verified, SingleOwnerOnlyChunkSet>, ChunkStoreError>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<bool> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut inner = this.gate.inner.lock().unwrap();
         if inner.granted.remove(&this.address) {
-            return Poll::Ready(this.present);
+            return Poll::Ready(this.answer.take().unwrap());
         }
         match inner.parked.iter_mut().find(|(a, _)| *a == this.address) {
             Some(slot) => slot.1 = cx.waker().clone(),
@@ -423,8 +420,8 @@ impl Future for HasProbe {
     }
 }
 
-/// Store double over a single-owner store: `get` resolves at once; `has`
-/// parks on the gate, so the caller chooses the order presence answers land.
+/// Store double over a single-owner store: every probe resolves at once but
+/// parks on the gate, so the caller chooses the order probe answers land.
 struct GatedStore<'a> {
     inner: &'a SocStore,
     gate: Gate,
@@ -438,15 +435,10 @@ impl ChunkGet<SingleOwnerOnlyChunkSet> for GatedStore<'_> {
         &self,
         address: &ChunkAddress,
     ) -> Result<Chunk<nectar_primitives::Verified, SingleOwnerOnlyChunkSet>, Self::Error> {
-        ChunkGet::get(self.inner, address).await
-    }
-}
-
-impl ChunkHas for GatedStore<'_> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        HasProbe {
+        let answer = ChunkGet::get(self.inner, address).await;
+        GetProbe {
             address: *address,
-            present: self.inner.get(address).is_some(),
+            answer: Some(answer),
             gate: self.gate.clone(),
         }
         .await
@@ -586,11 +578,11 @@ fn probes_fill_exactly_the_window() {
     }
 }
 
-/// Store answering presence from a real feed but failing every fetch: the
-/// search converges on probes alone.
-struct ProbeOnly<'a>(&'a SocStore);
+/// A store that answers every probe with the medium's own absence and
+/// fails every fetch: the search converges on classified absences alone.
+struct AbsentOnly;
 
-impl ChunkGet<SingleOwnerOnlyChunkSet> for ProbeOnly<'_> {
+impl ChunkGet<SingleOwnerOnlyChunkSet> for AbsentOnly {
     type Trust = nectar_primitives::Verified;
     type Error = ChunkStoreError;
 
@@ -602,17 +594,38 @@ impl ChunkGet<SingleOwnerOnlyChunkSet> for ProbeOnly<'_> {
     }
 }
 
-impl ChunkHas for ProbeOnly<'_> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        ChunkHas::has(self.0, address).await
+/// A store whose probes fail with an unclassified backend error: no verdict
+/// is reachable, and the first probe's failure must surface.
+struct Failing;
+
+impl ChunkGet<SingleOwnerOnlyChunkSet> for Failing {
+    type Trust = nectar_primitives::Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        _address: &ChunkAddress,
+    ) -> Result<Chunk<nectar_primitives::Verified, SingleOwnerOnlyChunkSet>, Self::Error> {
+        Err(ChunkStoreError::Other(Box::new(BackendRefusal)))
     }
 }
 
-/// The fetch of the committed update is the only fallible step of the search,
-/// so its error surfaces at the commit and nowhere earlier: an absent floor
-/// still returns an empty result.
+#[derive(Debug)]
+struct BackendRefusal;
+
+impl core::fmt::Display for BackendRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("backend refusal")
+    }
+}
+
+impl core::error::Error for BackendRefusal {}
+
+/// A store that misreports absence truncates the scan to an empty result;
+/// a store that fails otherwise aborts the search at the first probe, and
+/// neither can surface a forged update.
 #[test]
-fn fetch_failure_surfaces_only_at_the_commit() {
+fn classified_absence_truncates_and_failure_aborts() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
@@ -622,17 +635,52 @@ fn fetch_failure_surfaces_only_at_the_commit() {
             publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
 
-        let reader =
-            Reader::new(feed, ProbeOnly(&store)).with_window(NonZeroUsize::new(4).unwrap());
-        assert!(matches!(
-            reader.latest().await.unwrap_err(),
-            FeedError::Store(_)
-        ));
-        assert!(matches!(
-            reader.latest_linear_from(Sequence::ZERO).await.unwrap_err(),
-            FeedError::Store(_)
-        ));
+        let absent = Reader::new(feed, AbsentOnly).with_window(NonZeroUsize::new(4).unwrap());
+        for empty in [
+            absent.latest().await.unwrap(),
+            absent.latest_linear_from(Sequence::ZERO).await.unwrap(),
+            absent.latest_from(Sequence::new(5)).await.unwrap(),
+        ] {
+            assert!(empty.update.is_none());
+        }
+        assert_eq!(
+            absent.latest_from(Sequence::new(5)).await.unwrap().next,
+            Some(Sequence::new(5))
+        );
 
+        let failing = Reader::new(feed, Failing).with_window(NonZeroUsize::new(4).unwrap());
+        assert!(matches!(
+            failing.latest().await.unwrap_err(),
+            FeedError::Store(_)
+        ));
+        assert!(matches!(
+            failing
+                .latest_linear_from(Sequence::ZERO)
+                .await
+                .unwrap_err(),
+            FeedError::Store(_)
+        ));
+        assert!(matches!(
+            failing.latest_from(Sequence::new(5)).await.unwrap_err(),
+            FeedError::Store(_)
+        ));
+    });
+}
+
+/// An absent floor still yields the empty result next to the floor: the
+/// floor probe's absence is its own classified answer, not a failure.
+#[test]
+fn absent_floor_yields_the_empty_result() {
+    run(async {
+        let signer = signer();
+        let feed = feed_for(&signer);
+        let store = SocStore::new();
+        let mut publisher = Publisher::new(feed, &store, &signer);
+        for n in 0u64..5 {
+            publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
+        }
+
+        let reader = Reader::new(feed, &store).with_window(NonZeroUsize::new(4).unwrap());
         let empty = reader.latest_from(Sequence::new(5)).await.unwrap();
         assert!(empty.update.is_none());
         assert_eq!(empty.next, Some(Sequence::new(5)));
