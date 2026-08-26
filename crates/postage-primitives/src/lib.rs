@@ -69,11 +69,11 @@ mod geometry;
 pub mod oracles;
 #[cfg(feature = "parallel")]
 pub mod parallel;
-mod sink;
 mod stamp;
 mod stamped;
 mod stamped_address;
 mod store;
+mod transfer;
 mod util;
 
 // Core types

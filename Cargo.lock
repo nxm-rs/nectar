@@ -2655,6 +2655,7 @@ version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "arbitrary",
+ "nectar-marker",
  "nectar-postage-primitives",
  "nectar-primitives",
  "nectar-testing",

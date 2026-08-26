@@ -5,7 +5,12 @@
 //! the key-value database alone: mantaray 0.2 keeps insert-order node
 //! placement, which the wire `mantaray/bee_vectors.rs` pins.
 
-#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unreachable, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unreachable,
+    clippy::unwrap_used
+)]
 
 use std::ops::Bound;
 use std::sync::Arc;

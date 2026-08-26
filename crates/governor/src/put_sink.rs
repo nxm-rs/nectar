@@ -1,11 +1,14 @@
 //! The shared bounded put window: a [`FuturesUnordered`] set capped by
 //! [`Admission`], generic over the put future.
 
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use core::fmt;
 use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
+use futures_util::sink::Sink;
 use futures_util::stream::{FuturesUnordered, Stream};
 
 use crate::admission::Admission;
@@ -14,12 +17,22 @@ use crate::window::Window;
 /// Bounded set of in-flight puts, order-free within `window` slots.
 ///
 /// Every put is admitted head-served, so the whole window is usable and
-/// completions surface in any order. Opening polls run on a noop waker, so a
-/// synchronously ready put settles inline and never occupies a slot; a parked
-/// put is driven only by [`poll_step`](Self::poll_step) and the wrappers over
-/// it under the caller's waker.
-pub struct PutSink<F> {
-    in_flight: FuturesUnordered<F>,
+/// completions surface in any order. Every put is boxed at admission, so a
+/// `!Unpin` put future rides the window directly; the opening poll runs on a
+/// noop waker, so a synchronously ready put settles inline and never
+/// occupies a slot. A parked put is driven only by
+/// [`poll_step`](Self::poll_step) and the wrappers over it under the caller's
+/// waker.
+pub struct PutSink<F: Future> {
+    in_flight: FuturesUnordered<Pin<Box<F>>>,
+    /// Inline-settled completions, drained before the in-flight set so a
+    /// [`push`](Self::push) followed by a read sees its own put.
+    /// Boxed so the window stays `Unpin` for non-`Unpin` `F::Output`.
+    #[allow(
+        clippy::box_collection,
+        reason = "boxed for Unpin, not size: a bare VecDeque would bound F::Output: Unpin"
+    )]
+    ready: Box<VecDeque<F::Output>>,
     admission: Admission,
 }
 
@@ -28,6 +41,7 @@ impl<F: Future> PutSink<F> {
     pub fn new(window: Window) -> Self {
         Self {
             in_flight: FuturesUnordered::new(),
+            ready: Box::new(VecDeque::new()),
             admission: Admission::new(window),
         }
     }
@@ -52,9 +66,12 @@ impl<F: Future> PutSink<F> {
         self.admission.admits(self.in_flight.len(), true)
     }
 
-    /// Poll one settled put out of the window. `Ready(None)` once empty;
-    /// `Pending` leaves the window untouched.
+    /// Poll one settled put out of the window. `Ready(None)` once the queue
+    /// and the window are both empty; `Pending` leaves them untouched.
     pub fn poll_step(&mut self, cx: &mut Context<'_>) -> Poll<Option<F::Output>> {
+        if let Some(completion) = self.ready.pop_front() {
+            return Poll::Ready(Some(completion));
+        }
         Pin::new(&mut self.in_flight).poll_next(cx)
     }
 
@@ -116,15 +133,19 @@ impl<F: Future> PutSink<F> {
     }
 }
 
-impl<F: Future + Unpin> PutSink<F> {
+impl<F: Future> PutSink<F> {
     /// Admit `put`, driving its opening poll on a noop waker: a ready put
     /// settles inline as `Some(completion)` and never occupies a slot, a
     /// pending one parks in the window as `None`.
     ///
+    /// Every put boxes once at admission; the put future needs no bound of
+    /// its own, so a `!Unpin` future the caller holds rides the window
+    /// directly.
+    ///
     /// Secure a slot with [`admit`](Self::admit) first; this does not bound
     /// the window.
     pub fn push(&mut self, put: F) -> Option<F::Output> {
-        let mut put = put;
+        let mut put = Box::pin(put);
         match Pin::new(&mut put).poll(&mut Context::from_waker(Waker::noop())) {
             Poll::Ready(completion) => Some(completion),
             Poll::Pending => {
@@ -135,10 +156,48 @@ impl<F: Future + Unpin> PutSink<F> {
     }
 }
 
-impl<F> fmt::Debug for PutSink<F> {
+impl<F: Future> Stream for PutSink<F> {
+    type Item = F::Output;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().poll_step(cx)
+    }
+}
+
+impl<F: Future> Sink<F> for PutSink<F> {
+    type Error = ();
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.get_mut().poll_admit(cx) {
+            Poll::Ready(_) => Poll::Ready(Ok(())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn start_send(self: Pin<&mut Self>, put: F) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        if let Some(completion) = this.push(put) {
+            this.ready.push_back(completion);
+        }
+        Ok(())
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // The put is already running in the window; the `Stream` half
+        // drains its completion.
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<F: Future> fmt::Debug for PutSink<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PutSink")
             .field("in_flight", &self.in_flight.len())
+            .field("ready", &self.ready.len())
             .field("window", &self.admission.window())
             .finish_non_exhaustive()
     }
@@ -146,7 +205,8 @@ impl<F> fmt::Debug for PutSink<F> {
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::marker::PhantomPinned;
+    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     use std::boxed::Box;
     use std::sync::Arc;
@@ -201,13 +261,59 @@ mod tests {
         assert_eq!(sink.len(), 1);
     }
 
+    /// A one-poll-pending future: `!Unpin` by the `PhantomPinned` field.
+    /// The counter is atomic because `Pin` gives no mutable access to a
+    /// `!Unpin` target.
+    struct OncePending(PhantomPinned, AtomicU32);
+
+    impl Future for OncePending {
+        type Output = usize;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<usize> {
+            if self.1.load(Ordering::Acquire) == 0 {
+                self.1.store(1, Ordering::Release);
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            } else {
+                Poll::Ready(7)
+            }
+        }
+    }
+
     #[test]
-    fn a_non_unpin_put_drains() {
+    fn a_non_unpin_put_rides_the_window() {
         nectar_testing::run(async {
-            let mut sink = PutSink::new(window(4));
-            // An async block is `!Unpin`; only `push` carries that bound.
-            sink.in_flight.push(async { 7usize });
+            let mut sink: PutSink<OncePending> = PutSink::new(window(4));
+            assert!(
+                sink.push(OncePending(PhantomPinned, AtomicU32::new(0)))
+                    .is_none()
+            );
+            assert_eq!(sink.len(), 1);
             assert_eq!(sink.settle_one().await, Some(7));
+        });
+    }
+
+    #[test]
+    fn the_window_is_a_sink_and_a_stream() {
+        nectar_testing::run(async {
+            use futures_util::SinkExt;
+            use futures_util::StreamExt;
+
+            let mut sink: PutSink<Delay> = PutSink::new(window(4));
+            // `send_all` drives a `TryStream`, so the items carry the
+            // `Sink::Error` = `()`.
+            let mut puts =
+                futures_util::stream::iter(vec![delayed(1, 1), delayed(2, 2), delayed(3, 0)])
+                    .map(Result::Ok::<Delay, ()>);
+            sink.send_all(&mut puts).await.expect("send_all");
+
+            let mut out = Vec::new();
+            while let Some(completion) = sink.next().await {
+                out.push(completion);
+            }
+            out.sort_unstable();
+            assert_eq!(out, [1, 2, 3]);
+            assert!(sink.is_empty());
         });
     }
 
