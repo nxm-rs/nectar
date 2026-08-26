@@ -249,6 +249,19 @@ impl Stamp {
         &self.sig
     }
 
+    /// The hash naming this stamp's version in a stamped store key:
+    /// keccak256 of the wire bytes.
+    ///
+    /// The wire bytes carry no chunk address, so the hash identifies
+    /// the stamp alone; the store key holds the address separately.
+    #[inline]
+    #[must_use]
+    pub fn hash(&self) -> B256 {
+        use alloy_primitives::keccak256;
+
+        keccak256(self.to_bytes())
+    }
+
     /// Serializes the stamp to a 113-byte array.
     #[inline]
     pub fn to_bytes(&self) -> StampBytes {

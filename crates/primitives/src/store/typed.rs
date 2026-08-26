@@ -2,10 +2,12 @@
 //!
 //! `ChunkGet` and `ChunkPut` are async and carry `MaybeSend`/`MaybeSync`
 //! bounds (on the traits and their error types) so a store may be `!Send` on
-//! single-threaded targets. The seam error is classified through
-//! [`StoreError`], so a generic consumer separates a definite miss from a
-//! failure. Trust is a property of the read medium, declared once per
-//! backend through [`ChunkGet::Trust`].
+//! single-threaded targets. `ChunkGetSync` is the synchronous counterpart
+//! of `ChunkGet`: the same stampless address read, without a future, for a
+//! store that reads its entries inside its own write transaction. The seam
+//! error is classified through [`StoreError`], so a generic consumer
+//! separates a definite miss from a failure. Trust is a property of the
+//! read medium, declared once per backend through [`ChunkGet::Trust`].
 
 use core::future::Future;
 
@@ -105,6 +107,41 @@ impl<U: PutUnit, T: ChunkPut<U> + ?Sized> ChunkPut<U> for alloc::sync::Arc<T> {
 pub trait TrustedGet<R: ChunkRegistry = StandardChunkSet>: ChunkGet<R, Trust = Verified> {}
 
 impl<R: ChunkRegistry, T: ChunkGet<R, Trust = Verified> + ?Sized> TrustedGet<R> for T {}
+
+/// Synchronous chunk retrieval by address: the stampless counterpart of
+/// [`ChunkGet`] without a future.
+///
+/// The value is stampless by design: the body is addressed, and the stamps
+/// that cover it are the concern of the store that keys them. A store that
+/// holds one body under several stamps answers the same body here.
+pub trait ChunkGetSync<R: ChunkRegistry = StandardChunkSet>: MaybeSend + MaybeSync {
+    /// Trust level of chunks read back from this medium.
+    type Trust: TrustState;
+
+    /// Error type for get operations.
+    type Error: StoreError;
+
+    /// Get a chunk by address.
+    fn get(&self, address: &ChunkAddress) -> Result<Chunk<Self::Trust, R>, Self::Error>;
+}
+
+impl<R: ChunkRegistry, T: ChunkGetSync<R> + ?Sized> ChunkGetSync<R> for &T {
+    type Trust = T::Trust;
+    type Error = T::Error;
+
+    fn get(&self, address: &ChunkAddress) -> Result<Chunk<Self::Trust, R>, Self::Error> {
+        (**self).get(address)
+    }
+}
+
+impl<R: ChunkRegistry, T: ChunkGetSync<R> + ?Sized> ChunkGetSync<R> for alloc::sync::Arc<T> {
+    type Trust = T::Trust;
+    type Error = T::Error;
+
+    fn get(&self, address: &ChunkAddress) -> Result<Chunk<Self::Trust, R>, Self::Error> {
+        (**self).get(address)
+    }
+}
 
 #[cfg(not(multi_thread))]
 mod send_sync_relaxation_proof {
