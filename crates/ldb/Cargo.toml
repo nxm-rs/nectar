@@ -74,11 +74,7 @@ encryption = []
 # The shared `Manifest` seam: the folder view as one implementation of it,
 # with entry data joined through the file crate's shared load lane. Implies
 # `std`.
-manifest = [
-	"dep:nectar-file",
-	"dep:nectar-manifest",
-	"std",
-]
+manifest = [ "dep:nectar-file", "dep:nectar-manifest", "std" ]
 std = [
 	"alloy-primitives/std",
 	"bytes/std",

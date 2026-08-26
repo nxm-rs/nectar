@@ -38,11 +38,7 @@ bench = [ "dep:serde" ]
 
 # Shared split fixtures and SwarmSpec doubles. Encrypted-mode splits ride the
 # mode-generic `split_into`; callers bring their own encryption features.
-fixtures = [
-	"dep:nectar-file",
-	"dep:nectar-postage",
-	"nectar-postage?/std",
-]
+fixtures = [ "dep:nectar-file", "dep:nectar-postage", "nectar-postage?/std" ]
 
 # The wasm smoke test is the executable proof that a !Send store satisfies the
 # chunk traits on wasm32; the same store cannot compile on native targets.
