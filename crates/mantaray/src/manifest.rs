@@ -21,13 +21,13 @@ use core::task::{Context, Poll};
 use futures_util::Stream;
 use nectar_file::{Policy, load_reference};
 use nectar_manifest::{
-    Batch, DataSink, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, ManifestView,
-    MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem, SinkError, SiteConfig,
-    collapse_dir,
+    Batch, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, ManifestView, MapEntry,
+    NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem, SiteConfig, collapse_dir,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
 use nectar_primitives::store::{ContentGet, MaybeSend, MaybeSync, TrustedGet};
+use positioned_io::WriteAt;
 
 use crate::cursor::TrieListing;
 use crate::editor::ManifestEditor;
@@ -301,7 +301,7 @@ where
         collapse_dir(dir.clone(), PathCursor::new(self.walk(dir.as_bytes())))
     }
 
-    fn load<K: DataSink<Error: SinkError> + MaybeSend>(
+    fn load<K: WriteAt + MaybeSend + ?Sized>(
         &self,
         path: &ManifestPath,
         sink: &mut K,

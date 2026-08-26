@@ -8,11 +8,11 @@ use futures_util::StreamExt;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::{ChunkRef, Reference};
+use positioned_io::WriteAt;
 
 use crate::listing::{Listing, collapse_dir};
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
-use crate::{DataSink, SinkError};
 
 /// What a bound path resolves to. [`load`](ManifestView::load) success is
 /// predictable from it: exactly a loadable entry loads.
@@ -194,7 +194,7 @@ pub trait ManifestView<R: Reference = ChunkRef>: MaybeSend + MaybeSync {
     /// Serves exactly what [`get`](Self::get) reports loadable; an opaque
     /// entry fails as [`NoData`](crate::ManifestError::NoData). The writes
     /// are idempotent overwrites: rerun a failed load in full.
-    fn load<K: DataSink<Error: SinkError> + MaybeSend>(
+    fn load<K: WriteAt + MaybeSend + ?Sized>(
         &self,
         path: &ManifestPath,
         sink: &mut K,

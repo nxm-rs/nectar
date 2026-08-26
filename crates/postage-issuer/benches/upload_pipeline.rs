@@ -24,7 +24,7 @@ use nectar_testing::run;
 use rand::{Rng, rng};
 use std::hint::black_box;
 
-use nectar_file::{File, HashWindow, Policy, PutWindow, ReadAt, ReadAtSource};
+use nectar_file::{File, HashWindow, Policy, PutWindow, ReadAt, ReadAtSource, Size};
 use nectar_postage_issuer::{
     BatchId, BatchStamper, BucketDepth, MemoryIssuer, StampPipeline, Stamper,
 };
@@ -58,9 +58,11 @@ impl ReadAt for SharedBuf {
         buf[..take].copy_from_slice(&self.0[start..start + take]);
         Ok(take)
     }
+}
 
-    fn len(&self) -> std::io::Result<u64> {
-        Ok(self.0.len() as u64)
+impl Size for SharedBuf {
+    fn size(&self) -> std::io::Result<Option<u64>> {
+        Ok(Some(self.0.len() as u64))
     }
 }
 

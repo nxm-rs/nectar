@@ -13,7 +13,8 @@ use super::{TINY, fill};
 use crate::config::Window;
 use crate::handle::{File, Policy};
 use crate::read::{CollectError, LoadError};
-use crate::sink::{DataSink, MemSink, MemSinkError};
+use nectar_testing::MemWriteAt;
+use positioned_io::WriteAt;
 
 type Store = MemoryStore<AnyChunkSet<TINY>>;
 
@@ -21,16 +22,18 @@ type Store = MemoryStore<AnyChunkSet<TINY>>;
 /// and not just its final bytes.
 #[derive(Debug, Default)]
 struct RecordingSink {
-    inner: MemSink,
+    inner: MemWriteAt,
     writes: Vec<(u64, usize)>,
 }
 
-impl DataSink for RecordingSink {
-    type Error = MemSinkError;
+impl WriteAt for RecordingSink {
+    fn write_at(&mut self, pos: u64, buf: &[u8]) -> std::io::Result<usize> {
+        self.writes.push((pos, buf.len()));
+        self.inner.write_at(pos, buf)
+    }
 
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::Error> {
-        self.writes.push((offset, data.len()));
-        self.inner.write_at(offset, data)
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -61,7 +64,7 @@ fn a_load_tiles_the_whole_file_exactly_once() {
         let mut sink = RecordingSink::default();
         let written = run(file.load(root, &mut sink)).unwrap();
         assert_eq!(written, size as u64, "written diverged at {size}");
-        assert_eq!(sink.inner.as_ref(), &data[..], "bytes diverged at {size}");
+        assert_eq!(sink.inner.as_bytes(), &data[..], "bytes diverged at {size}");
 
         // Every write lands once and the writes tile the file gaplessly.
         let mut spans = sink.writes.clone();
@@ -82,7 +85,7 @@ fn a_ranged_load_writes_range_relative_offsets() {
     let mut sink = RecordingSink::default();
     let written = run(file.load_range(root, 300..5_000, &mut sink)).unwrap();
     assert_eq!(written, 4_700);
-    assert_eq!(sink.inner.as_ref(), &data[300..5_000]);
+    assert_eq!(sink.inner.as_bytes(), &data[300..5_000]);
     assert!(
         sink.writes.iter().all(|(offset, _)| *offset < 4_700),
         "a ranged load must write range-relative offsets"
@@ -155,11 +158,13 @@ fn a_policy_window_reaches_the_walk() {
 #[derive(Debug)]
 struct DeadSink;
 
-impl DataSink for DeadSink {
-    type Error = std::io::Error;
-
-    fn write_at(&mut self, _offset: u64, _data: &[u8]) -> Result<(), Self::Error> {
+impl WriteAt for DeadSink {
+    fn write_at(&mut self, _offset: u64, _data: &[u8]) -> std::io::Result<usize> {
         Err(std::io::Error::other("sink gone"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -176,7 +181,7 @@ fn an_absent_root_fails_the_open_typed() {
     let store: Arc<MemoryStore<ContentOnlyChunkSet<TINY>>> = Arc::new(MemoryStore::new());
     let file = File::<_, TINY>::new(store, Policy::DEFAULT);
     let missing = EntryRef::Plain(ChunkRef::new(ChunkAddress::from([0x5a; 32])));
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     assert!(matches!(
         run(file.load(missing, &mut sink)).unwrap_err(),
         LoadError::Open(_)
@@ -193,9 +198,9 @@ fn an_encrypted_save_round_trips_through_the_same_handle() {
             .unwrap();
     let file = File::<_, TINY>::new(ContentGet::new(store), Policy::DEFAULT);
     let reference = EntryRef::Encrypted(root);
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let written = run(file.load(reference.clone(), &mut sink)).unwrap();
     assert_eq!(written, data.len() as u64);
-    assert_eq!(sink.as_ref(), &data[..]);
+    assert_eq!(sink.as_bytes(), &data[..]);
     assert_eq!(run(file.collect(reference, u64::MAX)).unwrap(), data);
 }

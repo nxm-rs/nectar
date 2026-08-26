@@ -544,7 +544,7 @@ fn frames_tile_the_clipped_range_exactly_once() {
 fn download_fills_a_sink_and_reports_progress() {
     use std::sync::{Arc, Mutex};
 
-    use crate::sink::MemSink;
+    use nectar_testing::MemWriteAt;
 
     let data = fill(11 * TINY + 63);
     let (root, store) = split_fixture::<TINY>(&data);
@@ -552,7 +552,7 @@ fn download_fills_a_sink_and_reports_progress() {
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let written = run(plain_file
         .download()
         .window(Window::new(4).unwrap())
@@ -560,7 +560,7 @@ fn download_fills_a_sink_and_reports_progress() {
         .run(&mut sink))
     .unwrap();
     assert_eq!(written, data.len() as u64);
-    assert_eq!(sink.as_ref(), data);
+    assert_eq!(sink.as_bytes(), data);
 
     let seen = seen.lock().unwrap();
     assert!(!seen.is_empty());
@@ -578,7 +578,8 @@ fn download_fills_a_sink_and_reports_progress() {
 #[cfg(feature = "encryption")]
 #[test]
 fn encrypted_download_overwrites_a_prefilled_sink() {
-    use crate::sink::{DataSink as _, MemSink};
+    use nectar_testing::MemWriteAt;
+    use positioned_io::WriteAt as _;
 
     let data = fill(11 * TINY + 63);
     let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
@@ -587,32 +588,32 @@ fn encrypted_download_overwrites_a_prefilled_sink() {
     ))
     .unwrap();
 
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     sink.write_at(0, &vec![0xa5; data.len()]).unwrap();
     let written = run(enc_file.download().run(&mut sink)).unwrap();
     assert_eq!(written, data.len() as u64);
-    assert_eq!(sink.as_ref(), data);
+    assert_eq!(sink.as_bytes(), data);
 }
 
 #[test]
 fn range_download_writes_range_relative_offsets() {
-    use crate::sink::MemSink;
+    use nectar_testing::MemWriteAt;
 
     let data = fill(9 * TINY + 11);
     let (root, store) = split_fixture::<TINY>(&data);
     let file = run(Opened::<_, Plain, TINY>::open(store, root)).unwrap();
 
     let range = 300u64..(5 * TINY) as u64;
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let written = run(file.download().range(range.clone()).run(&mut sink)).unwrap();
     assert_eq!(written, range.end - range.start);
-    assert_eq!(sink.as_ref(), &data[300..5 * TINY]);
+    assert_eq!(sink.as_bytes(), &data[300..5 * TINY]);
 
     // Clip semantics: an out-of-file range shrinks instead of failing.
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let written = run(file.download().range(500..u64::MAX).run(&mut sink)).unwrap();
     assert_eq!(written, data.len() as u64 - 500);
-    assert_eq!(sink.as_ref(), &data[500..]);
+    assert_eq!(sink.as_bytes(), &data[500..]);
 }
 
 #[test]
@@ -749,7 +750,7 @@ impl nectar_primitives::store::ChunkGet<ContentOnlyChunkSet<TINY>> for FailOnce 
 #[test]
 fn download_restart_after_transient_failure_is_idempotent() {
     use super::LoadError;
-    use crate::sink::MemSink;
+    use nectar_testing::MemWriteAt;
 
     let data = fill(19 * TINY + 41);
     let (root, store) = split_fixture::<TINY>(&data);
@@ -760,7 +761,7 @@ fn download_restart_after_transient_failure_is_idempotent() {
         countdown: std::sync::Arc::new(std::sync::Mutex::new(Some(9))),
     };
 
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let file = run(Opened::<_, Plain, TINY>::open(store, root)).unwrap();
     let err = run(file
         .download()
@@ -778,7 +779,7 @@ fn download_restart_after_transient_failure_is_idempotent() {
     // Restart: the full re-run overwrites the partial bytes idempotently.
     let written = run(file.download().run(&mut sink)).unwrap();
     assert_eq!(written, data.len() as u64);
-    assert_eq!(sink.as_ref(), data);
+    assert_eq!(sink.as_bytes(), data);
 }
 
 /// Shrinking stable coverage: split-and-join roundtrip and the seek model,
@@ -920,14 +921,14 @@ fn window_policy_rides_across_a_seek() {
 
 #[test]
 fn download_honours_a_window_policy() {
-    use crate::sink::MemSink;
+    use nectar_testing::MemWriteAt;
 
     let len = 25 * TINY + 3;
     let data = fill(len);
     let (root, store) = split_fixture::<TINY>(&data);
     run(async {
         let file = Opened::<_, Plain, TINY>::open(store, root).await.unwrap();
-        let mut sink = MemSink::new();
+        let mut sink = MemWriteAt::new();
         let written = file
             .download()
             .window(Window::new(6).unwrap())
@@ -938,6 +939,6 @@ fn download_honours_a_window_policy() {
             .await
             .unwrap();
         assert_eq!(written, len as u64);
-        assert_eq!(sink.as_ref(), data.as_slice());
+        assert_eq!(sink.as_bytes(), data.as_slice());
     });
 }

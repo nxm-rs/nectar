@@ -14,10 +14,10 @@ use core::ops::ControlFlow;
 use futures_util::StreamExt;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::ChunkRef;
-use nectar_primitives::sink::DataSink;
-use nectar_primitives::store::BoxedError;
 use nectar_tasks::BoxFuture;
+use positioned_io::WriteAt;
 
+use crate::Manifest;
 use crate::batch::Batch;
 use crate::error::{ErasedFormat, ErasedManifestError, ManifestError};
 use crate::listing::Listing;
@@ -26,40 +26,6 @@ use crate::op::ManifestOp;
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
 use crate::view::{ManifestView, MapEntry};
-use crate::{Manifest, SinkError};
-
-/// A sink write that failed behind the erased seam; the concrete error
-/// survives as the source.
-#[derive(Debug, thiserror::Error)]
-#[error("erased sink write failed")]
-pub struct DynSinkError(#[source] BoxedError);
-
-/// Object-safe [`DataSink`]: the same positional, idempotent write with the
-/// error boxed.
-///
-/// Blanket-implemented, so any sink is usable through the erased seam.
-pub trait DynSink: MaybeSend {
-    /// Write `data` at absolute byte `offset`, growing the sink as needed.
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), DynSinkError>;
-}
-
-impl<K: DataSink<Error: SinkError> + MaybeSend> DynSink for K {
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), DynSinkError> {
-        DataSink::write_at(self, offset, data).map_err(|source| DynSinkError(Box::new(source)))
-    }
-}
-
-/// An erased sink borrowed back into the static [`DataSink`] the format's own
-/// load expects.
-struct SinkBridge<'a>(&'a mut dyn DynSink);
-
-impl DataSink for SinkBridge<'_> {
-    type Error = DynSinkError;
-
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::Error> {
-        self.0.write_at(offset, data)
-    }
-}
 
 /// A typed seam failure with its format union boxed.
 fn erase<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
@@ -67,6 +33,15 @@ fn erase<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
 ) -> ErasedManifestError {
     error.map_format(|format| ErasedFormat(Box::new(format)))
 }
+
+/// The object-safe positional target of [`ErasedManifest::dyn_load`].
+///
+/// An object name carries its marker bounds only through a principal trait,
+/// so the erased sink borrows one over [`WriteAt`] with no behaviour of its
+/// own. Blanket-implemented, so any positional target is usable.
+pub trait DynWriteAt: WriteAt + MaybeSend {}
+
+impl<T: WriteAt + MaybeSend + ?Sized> DynWriteAt for T {}
 
 /// Object-safe visitor for [`ErasedManifest::dyn_for_each`]:
 /// blanket-implemented for closures, so a caller passes
@@ -132,7 +107,7 @@ pub trait ErasedManifest: MaybeSend + MaybeSync {
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-        sink: &'a mut dyn DynSink,
+        sink: &'a mut (dyn DynWriteAt + 'a),
     ) -> BoxFuture<'a, Result<(), ErasedManifestError>>;
 
     /// The site-level documents the manifest declares, each absent as `None`.
@@ -243,12 +218,9 @@ where
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-        sink: &'a mut dyn DynSink,
+        sink: &'a mut (dyn DynWriteAt + 'a),
     ) -> BoxFuture<'a, Result<(), ErasedManifestError>> {
-        Box::pin(async move {
-            let mut bridge = SinkBridge(sink);
-            self.at(*root).load(path, &mut bridge).await.map_err(erase)
-        })
+        Box::pin(async move { self.at(*root).load(path, sink).await.map_err(erase) })
     }
 
     fn dyn_site_config<'a>(

@@ -73,7 +73,6 @@ pub mod chunk;
 pub mod entry_ref;
 pub mod marker;
 pub mod signing;
-pub mod sink;
 pub mod store;
 pub mod timestamp;
 

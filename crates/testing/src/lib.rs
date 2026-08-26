@@ -46,8 +46,10 @@
 #[cfg(feature = "bench")]
 pub mod bench;
 
+mod positional;
 mod seeds;
 
+pub use positional::MemWriteAt;
 pub use seeds::SeedReplay;
 #[cfg(feature = "alloc")]
 mod alloc;

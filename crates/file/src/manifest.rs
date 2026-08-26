@@ -1,9 +1,10 @@
 //! The manifest seam's shared data-load lane, called by every format adapter.
 
-use nectar_manifest::{DataSink, ManifestError, SinkError};
+use nectar_manifest::ManifestError;
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::{MaybeSend, MaybeSync, TrustedGet};
+use positioned_io::WriteAt;
 
 use crate::{File, LoadError, Policy};
 
@@ -19,7 +20,7 @@ pub async fn load_reference<S, K, F, const B: usize>(
 ) -> Result<(), ManifestError<F>>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
-    K: DataSink<Error: SinkError> + MaybeSend,
+    K: WriteAt + MaybeSend + ?Sized,
 {
     File::<S, B>::new(store, policy)
         .load(reference, sink)

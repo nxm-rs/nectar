@@ -12,7 +12,9 @@ use nectar_testing::{run, yield_now};
 
 use super::{File, Policy};
 use crate::config::PutWindow;
-use crate::source::{ReadAt, ReadAtError, ReadAtSource};
+use positioned_io::{ReadAt, Size};
+
+use crate::source::{ReadAtError, ReadAtSource};
 use crate::split::{SaveError, SplitError, SplitMode};
 use crate::testutil::reject_all;
 use crate::walk::Plain;
@@ -25,7 +27,7 @@ async fn split_read_at<R, S, M, const B: usize>(
     window: PutWindow,
 ) -> Result<M::Root, SaveError<S::Error, ReadAtError>>
 where
-    R: ReadAt,
+    R: ReadAt + Size,
     S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     M: SplitMode + Default,
 {
@@ -276,13 +278,29 @@ fn encrypted_ingest_reads_back_through_the_walk() {
     assert_eq!(plaintext, data);
 }
 
+/// A positional view over a refcounted byte buffer.
+#[derive(Debug)]
+struct SharedBytes(bytes::Bytes);
+
+impl ReadAt for SharedBytes {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.as_ref().read_at(offset, buf)
+    }
+}
+
+impl Size for SharedBytes {
+    fn size(&self) -> std::io::Result<Option<u64>> {
+        self.0.as_ref().size()
+    }
+}
+
 #[test]
 fn bytes_and_slice_sources_agree() {
     let data = fill(11 * TINY + 7);
     let (from_vec, _) = ingest::<TINY>(data.clone(), 4, 0);
     let store = TestStore::<TINY>::new(0);
     let from_bytes = run(split_read_at::<_, _, Plain, TINY>(
-        bytes::Bytes::from(data),
+        SharedBytes(bytes::Bytes::from(data)),
         store,
         PutWindow::DEFAULT,
     ))
@@ -323,9 +341,11 @@ impl ReadAt for FailingSource {
         }
         self.data.read_at(offset, buf)
     }
+}
 
-    fn len(&self) -> std::io::Result<u64> {
-        ReadAt::len(&self.data)
+impl Size for FailingSource {
+    fn size(&self) -> std::io::Result<Option<u64>> {
+        Size::size(&self.data)
     }
 }
 
@@ -362,9 +382,11 @@ impl ReadAt for LyingSource {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
         self.data.read_at(offset, buf)
     }
+}
 
-    fn len(&self) -> std::io::Result<u64> {
-        Ok(self.claimed)
+impl Size for LyingSource {
+    fn size(&self) -> std::io::Result<Option<u64>> {
+        Ok(Some(self.claimed))
     }
 }
 
@@ -398,9 +420,11 @@ impl ReadAt for OverrunSource {
     fn read_at(&self, _offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
         Ok(buf.len() + 1)
     }
+}
 
-    fn len(&self) -> std::io::Result<u64> {
-        Ok(u64::try_from(TINY).unwrap())
+impl Size for OverrunSource {
+    fn size(&self) -> std::io::Result<Option<u64>> {
+        Ok(Some(u64::try_from(TINY).unwrap()))
     }
 }
 
@@ -427,8 +451,10 @@ impl ReadAt for UnsizedSource {
     fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> std::io::Result<usize> {
         Ok(0)
     }
+}
 
-    fn len(&self) -> std::io::Result<u64> {
+impl Size for UnsizedSource {
+    fn size(&self) -> std::io::Result<Option<u64>> {
         Err(std::io::Error::other("no metadata"))
     }
 }

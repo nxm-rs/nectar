@@ -102,7 +102,7 @@ mod view;
 
 pub use batch::{Batch, CheckedBatch};
 pub use cursor::{PathCursor, RawCursor, RawItem};
-pub use dynamic::{DynSink, DynSinkError, DynVisit, ErasedManifest};
+pub use dynamic::{DynVisit, DynWriteAt, ErasedManifest};
 pub use error::{ErasedFormat, ErasedManifestError, ManifestError};
 pub use listing::{ListEntry, Listing, collapse_dir};
 pub use meta::{ManifestMeta, MetadataBlock, MetadataSource, MetadataView, WellKnownKey};
@@ -113,22 +113,14 @@ pub use reserved::{ReservedKey, reserved_key};
 pub use site::SiteConfig;
 pub use view::{ManifestCursor, ManifestView, MapEntry, Served, serve_fallback};
 
-// The positional sink a load writes into is the primitives crate's,
+// The positional target a load writes into is the positioned-io crate's,
 // re-exported so a manifest consumer needs no second dependency to name it.
-pub use nectar_primitives::sink::{DataSink, MemSink};
+pub use positioned_io::WriteAt;
 
 use core::future::Future;
 
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::{ChunkRef, Reference};
-
-/// Bounds a sink error must carry to cross the seam.
-///
-/// A load reports the sink's failure through the manifest's own error type, so
-/// the sink error has to box.
-pub trait SinkError: core::error::Error + MaybeSend + MaybeSync + 'static {}
-
-impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 
 /// A path-to-reference map, read through a root-bound view and written by
 /// applying a [`Batch`] against a base root.

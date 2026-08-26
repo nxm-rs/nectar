@@ -6,12 +6,14 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 
-use nectar_file::{DataSink, File, MemSink, Policy};
+use nectar_file::{File, Policy};
 use nectar_ldb::Database;
 use nectar_manifest::{Batch, Manifest, ManifestError, ManifestPath, ManifestView, MapEntry};
 use nectar_mantaray::{MantarayManifest, NodeLoadSaver};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
+use nectar_testing::MemWriteAt;
+use positioned_io::WriteAt;
 
 /// Shared chunk store: `MemoryStore` clones its contents, so every handle in
 /// one test has to reach the same map.
@@ -281,7 +283,7 @@ where
     let mut probes = Vec::new();
     for path in paths {
         let meta = view.metadata(path).await.unwrap();
-        let mut sink = MemSink::new();
+        let mut sink = MemWriteAt::new();
         probes.push(Probe {
             path: text(path),
             entry: view.get(path).await.unwrap(),
@@ -325,10 +327,12 @@ pub(crate) struct RefusingSink;
 #[error("the sink refused the write")]
 pub(crate) struct Refused;
 
-impl DataSink for RefusingSink {
-    type Error = Refused;
+impl WriteAt for RefusingSink {
+    fn write_at(&mut self, _offset: u64, _data: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other(Refused))
+    }
 
-    fn write_at(&mut self, _offset: u64, _data: &[u8]) -> Result<(), Self::Error> {
-        Err(Refused)
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::other(Refused))
     }
 }

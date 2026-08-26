@@ -35,6 +35,7 @@ nectar-manifest.workspace = true
 nectar-mantaray = { workspace = true, features = ["manifest", "rand"] }
 nectar-primitives = { workspace = true, features = ["std"] }
 nectar-testing = { workspace = true, features = ["alloc", "fixtures"] }
+positioned-io = { workspace = true }
 proptest.workspace = true
 
 [features]

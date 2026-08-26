@@ -4,7 +4,7 @@ Streaming file pipeline for Ethereum Swarm: bounded chunk-tree reads and writes 
 
 `File` is the whole surface. Bind a store to a `Policy`, then:
 
-- `File::load(root, &mut sink)` drains the chunk tree at `root` into a positional `DataSink`. The sink is positional on purpose: frames land at their offsets in completion order, which is what makes unordered retrieval possible.
+- `File::load(root, &mut sink)` drains the chunk tree at `root` into a positional `WriteAt` target. The sink is positional on purpose: frames land at their offsets in completion order, which is what makes unordered retrieval possible.
 - `File::save(src)` drains a `Source` into a fresh tree and returns its root. Adapters cover the three shapes the pipeline meets: an in-memory slice, a positional `ReadAt` target through `ReadAtSource`, and an async byte stream through `AsyncReadSource`.
 - `File::open(root)` hands back a `Reader` for an ordered, seekable read, and `File::collect(root, max)` assembles a bounded in-memory copy.
 

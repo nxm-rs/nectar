@@ -27,6 +27,7 @@ nectar-manifest = { workspace = true, optional = true }
 nectar-marker = { workspace = true }
 nectar-primitives = { workspace = true, features = ["std"] }
 nectar-tasks = { workspace = true, features = ["std"] }
+positioned-io = { workspace = true }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["sync"], optional = true }
 zeroize = { workspace = true, optional = true }

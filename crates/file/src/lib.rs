@@ -2,18 +2,17 @@
 //! over a chunk store.
 //!
 //! [`File`] is the whole surface: bind a store to a [`Policy`], then
-//! `load` a root into a positional [`DataSink`] or `save` a [`Source`] into
-//! a fresh tree. The sink is positional on purpose: frames land at their
-//! offsets in completion order, which is what makes unordered retrieval
-//! possible.
+//! `load` a root into a positional [`WriteAt`] target or `save` a
+//! [`Source`] into a fresh tree. The target is positional on purpose:
+//! frames land at their offsets in completion order, which is what makes
+//! unordered retrieval possible.
 //!
 //! The rest of the crate is supporting cast: per-profile tree [`geometry`]
 //! pinned at compile time, the [`config`] admission budgets the engines
-//! drain against, the [`sink`] targets a restartable load writes into, the
-//! [`source`] adapters a save pulls from, and the [`sync`] driver for
-//! Ready-only guests. The walk and split engines and their builders are
-//! crate-private; `tokio` is an optional adapter shim over the same
-//! handles.
+//! drain against, the [`source`] adapters a save pulls from, and the
+//! [`sync`] driver for Ready-only guests. The walk and split engines and
+//! their builders are crate-private; `tokio` is an optional adapter shim
+//! over the same handles.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -67,7 +66,6 @@ pub mod oracles;
     reason = "crate-private module: `pub` is crate visibility"
 )]
 pub(crate) mod read;
-pub mod sink;
 pub mod source;
 #[allow(
     unreachable_pub,
@@ -94,15 +92,14 @@ pub use handle::{File, Policy, Reader, Segments};
 #[cfg(feature = "manifest")]
 #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
 pub use manifest::load_reference;
+pub use positioned_io::{ReadAt, Size, WriteAt};
 pub use read::AdaptiveWindow;
 pub use read::{CollectError, LoadError, OpenError, Progress, ProgressFn, SeekPastEnd};
-pub use sink::FsSink;
-pub use sink::{DataSink, MemSink, MemSinkError};
 #[cfg(feature = "tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub use source::AsyncReadSource;
 pub use source::Source;
-pub use source::{ReadAt, ReadAtError, ReadAtSource};
+pub use source::{ReadAtError, ReadAtSource};
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use split::{KeyError, KeySource, RandomKeys};

@@ -10,7 +10,6 @@
     clippy::unwrap_used
 )]
 
-use nectar_file::MemSink;
 use nectar_ldb::{Database, Reader as LdbReader};
 use nectar_manifest::{
     ErasedManifest, Listing, ManifestOp, ManifestPath, MapEntry, MetadataSource, MetadataView,
@@ -18,6 +17,7 @@ use nectar_manifest::{
 };
 use nectar_mantaray::{MantarayManifest, NodeLoadSaver, Reader as MantarayReader, metadata};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE};
+use nectar_testing::MemWriteAt;
 use nectar_testing::run;
 use std::sync::Arc;
 
@@ -103,9 +103,9 @@ async fn exercise(manifest: &dyn ErasedManifest, base: &ChunkRef, file: &ChunkRe
     assert!(none.is_none(), "no path is at or below the probe");
 
     // A load joins the whole chunk tree the entry names into the sink.
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     manifest.dyn_load(&root, &index, &mut sink).await.unwrap();
-    assert_eq!(sink.as_ref(), data);
+    assert_eq!(sink.as_bytes(), data);
 
     // A removal is the same map vocabulary, and the removed path stops
     // resolving.
@@ -116,7 +116,7 @@ async fn exercise(manifest: &dyn ErasedManifest, base: &ChunkRef, file: &ChunkRe
     let listing = manifest.dyn_dir(&pruned, &top).await.unwrap();
     assert_eq!(paths(&listing), ["img/"]);
 
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let gone = manifest.dyn_load(&pruned, &index, &mut sink).await;
     assert!(gone.is_err(), "a removed path names no data");
 
@@ -136,7 +136,7 @@ async fn exercise(manifest: &dyn ErasedManifest, base: &ChunkRef, file: &ChunkRe
     assert_eq!(cleared.unwrap(), root, "clearing restores the content root");
 
     // The empty path is a listing prefix, not a key.
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let empty_load = manifest.dyn_load(&configured, &top, &mut sink).await;
     assert!(empty_load.is_err(), "the empty path names no data");
     let bound = manifest.dyn_contains_key(&configured, &top).await.unwrap();
@@ -151,7 +151,7 @@ async fn exercise(manifest: &dyn ErasedManifest, base: &ChunkRef, file: &ChunkRe
         .err()
         .and_then(|e| e.as_reserved().map(|r| r.path().clone()));
     assert_eq!(reserved, Some(separator), "erased Reserved");
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let absent = p("absent.html");
     let missing = manifest.dyn_load(&root, &absent, &mut sink).await.err();
     assert!(missing.is_some_and(|e| e.is_not_found()), "erased NotFound");

@@ -15,8 +15,8 @@ use super::error::LoadError;
 use super::frames::FileFrames;
 use crate::config::Window;
 use crate::num::u64_from_usize;
-use crate::sink::DataSink;
 use crate::walk::{Walk, WalkMode, WindowPolicyFn};
+use positioned_io::WriteAt;
 
 /// Progress snapshot delivered after each frame lands in the sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,10 +135,7 @@ where
     ///
     /// Frames land in completion order, each written once at its
     /// range-relative offset; any error is terminal for this run.
-    pub async fn run<K: DataSink>(
-        self,
-        sink: &mut K,
-    ) -> Result<u64, LoadError<S::Error, K::Error>> {
+    pub async fn run<K: WriteAt + ?Sized>(self, sink: &mut K) -> Result<u64, LoadError<S::Error>> {
         let mut walk = Walk::new(
             self.store,
             self.root,
@@ -158,7 +155,7 @@ where
         while let Some(frame) = frames.next().await {
             let frame = frame?;
             let offset = frame.offset.saturating_sub(clipped.start);
-            sink.write_at(offset, frame.data.as_ref())
+            sink.write_all_at(offset, frame.data.as_ref())
                 .map_err(|source| LoadError::Sink { offset, source })?;
             written = written.saturating_add(u64_from_usize(frame.data.len()));
             if let Some(callback) = callback.as_mut() {

@@ -2,7 +2,7 @@
 //!
 //! [`File`] pairs a store with an admission [`Policy`] and exposes the two
 //! verbs the pipeline has: `load` drains a chunk tree into a positional
-//! [`DataSink`], `save` drains a [`Source`] into a fresh tree. The reference
+//! [`WriteAt`] target, `save` drains a [`Source`] into a fresh tree. The reference
 //! width is dispatched at runtime off the [`EntryRef`], so one handle reads
 //! both plain and encrypted trees; the write side picks its grammar by verb.
 //!
@@ -10,9 +10,10 @@
 //! failing. Only [`Reader::seek`] is typed-strict; it never clamps.
 //!
 //! ```
-//! use nectar_file::{File, MemSink, Policy};
+//! use nectar_file::{File, Policy};
 //! use nectar_primitives::chunk::AnyChunkSet;
 //! use nectar_primitives::store::{ContentGet, MemoryStore};
+//! use nectar_testing::MemWriteAt;
 //! use std::sync::Arc;
 //!
 //! # nectar_testing::run(async {
@@ -23,10 +24,10 @@
 //! let root = writer.save(&data[..]).await.unwrap();
 //!
 //! let reader = File::<_, 4096>::new(ContentGet::new(Arc::clone(&store)), Policy::DEFAULT);
-//! let mut sink = MemSink::new();
+//! let mut sink = MemWriteAt::new();
 //! let written = reader.load(root.into(), &mut sink).await.unwrap();
 //! assert_eq!(written, 40_000);
-//! assert_eq!(sink.as_ref(), &data[..]);
+//! assert_eq!(sink.as_bytes(), &data[..]);
 //! # });
 //! ```
 
@@ -49,10 +50,10 @@ use crate::read::{
     AnyOpened, CollectError, DownloadBuilder, FileReader, FileStream, LoadError, OpenError, Opened,
     ProgressFn, ReadBuilder, SeekPastEnd,
 };
-use crate::sink::DataSink;
 use crate::source::Source;
 use crate::split::{SaveError, SplitMode, SplitStats, save_source};
 use crate::walk::{Encrypted, Plain, WalkError, WalkMode, WalkStats};
+use positioned_io::WriteAt;
 
 /// Closed-loop window seed: the throughput hint an adaptive controller is
 /// built from, plus the cap it must never pass.
@@ -258,44 +259,44 @@ where
     /// possible; any error is terminal for this run. A load is restartable,
     /// not resumable: run it again in full and the sink's idempotent
     /// overwrites make the re-run safe.
-    pub async fn load<K: DataSink>(
+    pub async fn load<K: WriteAt + ?Sized>(
         &self,
         root: EntryRef,
         sink: &mut K,
-    ) -> Result<u64, LoadError<S::Error, K::Error>> {
+    ) -> Result<u64, LoadError<S::Error>> {
         self.load_range(root, 0..u64::MAX, sink).await
     }
 
     /// Drain `range` of the file at `root` into `sink`; sink offsets are
     /// relative to the clipped range start.
-    pub async fn load_range<K: DataSink>(
+    pub async fn load_range<K: WriteAt + ?Sized>(
         &self,
         root: EntryRef,
         range: Range<u64>,
         sink: &mut K,
-    ) -> Result<u64, LoadError<S::Error, K::Error>> {
+    ) -> Result<u64, LoadError<S::Error>> {
         self.load_with(root, range, None, sink).await
     }
 
     /// [`load_range`](Self::load_range) reporting progress after each frame
     /// lands in the sink.
-    pub async fn load_with_progress<K: DataSink>(
+    pub async fn load_with_progress<K: WriteAt + ?Sized>(
         &self,
         root: EntryRef,
         range: Range<u64>,
         progress: ProgressFn,
         sink: &mut K,
-    ) -> Result<u64, LoadError<S::Error, K::Error>> {
+    ) -> Result<u64, LoadError<S::Error>> {
         self.load_with(root, range, Some(progress), sink).await
     }
 
-    async fn load_with<K: DataSink>(
+    async fn load_with<K: WriteAt + ?Sized>(
         &self,
         root: EntryRef,
         range: Range<u64>,
         progress: Option<ProgressFn>,
         sink: &mut K,
-    ) -> Result<u64, LoadError<S::Error, K::Error>> {
+    ) -> Result<u64, LoadError<S::Error>> {
         match self.opened(root).await? {
             AnyOpened::Plain(file) => self.downloads(&file, range, progress).run(sink).await,
             AnyOpened::Encrypted(file) => self.downloads(&file, range, progress).run(sink).await,

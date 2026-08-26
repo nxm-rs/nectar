@@ -17,12 +17,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use nectar_file::{
-    BranchBudget, CollectError, DataSink, File, MemSink, MemSinkError, Plain, Policy, PutWindow,
-    Reader, SplitStats, WalkStats, Window,
+    BranchBudget, CollectError, File, Plain, Policy, PutWindow, Reader, SplitStats, WalkStats,
+    Window,
 };
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
-use nectar_testing::{run, yield_now};
+use nectar_testing::{MemWriteAt, run, yield_now};
+use positioned_io::WriteAt;
 
 /// Tiny body size: fan-out 8, so a few hundred leaves already build a deep
 /// tree.
@@ -35,16 +36,18 @@ type PlainReader = Reader<ContentGet<GaugeStore<TINY>>, TINY>;
 /// independently of its final bytes.
 #[derive(Debug, Default)]
 struct RecordingSink {
-    inner: MemSink,
+    inner: MemWriteAt,
     writes: Vec<(u64, usize)>,
 }
 
-impl DataSink for RecordingSink {
-    type Error = MemSinkError;
-
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::Error> {
+impl WriteAt for RecordingSink {
+    fn write_at(&mut self, offset: u64, data: &[u8]) -> std::io::Result<usize> {
         self.writes.push((offset, data.len()));
         self.inner.write_at(offset, data)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -411,7 +414,7 @@ fn frames_and_download_hold_the_window_out_of_order() {
         run(reader_at(store.clone(), window).load_range(root.into(), 100..15_000, &mut sink))
             .unwrap();
     assert_eq!(written, 14_900);
-    assert_eq!(sink.inner.as_ref(), &data[100..15_000]);
+    assert_eq!(sink.inner.as_bytes(), &data[100..15_000]);
     let mut spans = sink.writes.clone();
     spans.sort_by_key(|(offset, _)| *offset);
     let mut cursor = 0u64;

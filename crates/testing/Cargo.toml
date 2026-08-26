@@ -20,6 +20,7 @@ futures-executor.workspace = true
 nectar-file = { workspace = true, optional = true }
 nectar-postage = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true, features = ["std"] }
+positioned-io = { workspace = true }
 serde = { workspace = true, optional = true, features = ["std", "derive"] }
 
 [dev-dependencies]

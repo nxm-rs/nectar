@@ -15,13 +15,14 @@ use futures_util::Stream;
 use futures_util::StreamExt;
 use nectar_file::load_reference;
 use nectar_manifest::{
-    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath,
-    ManifestView, MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem, Served,
-    SinkError, SiteConfig, serve_fallback,
+    Batch, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, ManifestView,
+    MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem, Served, SiteConfig,
+    serve_fallback,
 };
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, ContentOnlyChunkSet};
 use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{Chunk, EntryRef};
+use positioned_io::WriteAt;
 
 use crate::apply::ApplyError;
 use crate::builder::Builder;
@@ -276,7 +277,7 @@ where
         Ok(served)
     }
 
-    async fn load<T: DataSink<Error: SinkError> + MaybeSend>(
+    async fn load<T: WriteAt + MaybeSend + ?Sized>(
         &self,
         path: &ManifestPath,
         sink: &mut T,
@@ -290,7 +291,7 @@ where
         let reference = match entry {
             Entry::Inline(value) => {
                 return sink
-                    .write_at(0, value.as_bytes())
+                    .write_all_at(0, value.as_bytes())
                     .map_err(ManifestError::sink);
             }
             Entry::Ref32(reference) => EntryRef::Plain(reference),
