@@ -59,10 +59,10 @@ pub use nectar_postage_primitives::oracles;
 #[cfg(feature = "parallel")]
 pub use nectar_postage_primitives::parallel;
 pub use nectar_postage_primitives::{
-    Batch, BatchDepth, BatchId, BatchParams, Bucket, BucketDepth, ChunkStore, Lifted,
-    PostageContext, STAMP_SIZE, Stamp, StampBytes, StampDigest, StampError, StampIndex,
-    StampedAddress, StampedChunk, StoreKey, Unvalidated, Validated, ValidationState, VerifyingKey,
-    calculate_bucket,
+    AdmissionError, AdmissionValidator, Batch, BatchDepth, BatchId, BatchParams, Bucket,
+    BucketDepth, ChunkStore, Lifted, PostageContext, STAMP_SIZE, Stamp, StampBytes, StampDigest,
+    StampError, StampIndex, StampedAddress, StampedChunk, StoreKey, Unvalidated, Validated,
+    ValidationState, VerifyingKey, calculate_bucket,
 };
 
 pub use sink::StampIndifferent;

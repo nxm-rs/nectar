@@ -133,3 +133,100 @@ impl From<Underrun> for StampError {
         }
     }
 }
+
+/// The denial side of the admission composite, one variant per way a stamped
+/// chunk is turned away.
+///
+/// The context group reads the store-level block height and cumulative
+/// payout, so its answer can change as the context moves. The signature and
+/// geometry answers are deterministic facts and deny the same way every
+/// time.
+#[non_exhaustive]
+#[derive(Debug, Error)]
+pub enum AdmissionError {
+    /// The store holds no batch for the id the stamp claims.
+    ///
+    /// The store-free composite never yields this: the caller's own load
+    /// miss produces it.
+    #[error("unknown batch {0}")]
+    UnknownBatch(BatchId),
+
+    /// The batch has not accumulated enough confirmations at the context's
+    /// block height.
+    #[error("batch not usable")]
+    BatchNotUsable,
+
+    /// The batch value sits at or below the context's cumulative payout.
+    #[error("batch expired")]
+    BatchExpired,
+
+    /// The signature recovered to someone who is not the batch owner.
+    #[error("owner mismatch")]
+    OwnerMismatch,
+
+    /// A geometry or signature failure from the leaf predicate.
+    #[error("stamp rejected")]
+    Stamp(#[from] StampError),
+}
+
+impl AdmissionError {
+    /// Whether the outcome can change as the chain context moves.
+    ///
+    /// A denial that is true of the context, not of the chunk. The context
+    /// group answers `true` because a later block height or a catch-up store
+    /// can admit what it denied; the signature and geometry answers answer
+    /// `false` because they are facts of the bytes.
+    pub const fn is_context_dependent(&self) -> bool {
+        match self {
+            Self::UnknownBatch(_) | Self::BatchNotUsable | Self::BatchExpired => true,
+            Self::OwnerMismatch | Self::Stamp(_) => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod admission_error_tests {
+    use super::*;
+    use core::error::Error as _;
+
+    /// The compiler forces this match to cover every variant, so a new
+    /// variant cannot be added without a classification decision here.
+    fn expected_group(err: &AdmissionError) -> bool {
+        match err {
+            AdmissionError::UnknownBatch(_)
+            | AdmissionError::BatchNotUsable
+            | AdmissionError::BatchExpired => true,
+            AdmissionError::OwnerMismatch | AdmissionError::Stamp(_) => false,
+        }
+    }
+
+    #[test]
+    fn every_variant_is_classified_into_exactly_one_group() {
+        let variants = [
+            AdmissionError::UnknownBatch(BatchId::ZERO),
+            AdmissionError::BatchNotUsable,
+            AdmissionError::BatchExpired,
+            AdmissionError::OwnerMismatch,
+            AdmissionError::Stamp(StampError::InvalidSignature),
+        ];
+        for err in &variants {
+            assert_eq!(
+                err.is_context_dependent(),
+                expected_group(err),
+                "{err:?} is misclassified"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stamp_group_carries_its_source() {
+        let err = AdmissionError::from(StampError::BucketFull {
+            bucket: 0,
+            capacity: 0,
+        });
+        assert!(matches!(err, AdmissionError::Stamp(_)));
+        let source = err.source().expect("the wrap carries its source");
+        assert!(source.downcast_ref::<StampError>().is_some());
+        assert!(!err.is_context_dependent());
+    }
+}

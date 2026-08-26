@@ -19,6 +19,8 @@
 //!   validates the pairing
 //! - [`StampedChunk`]: A chunk and its stamp, carrying the chunk's trust state
 //!   and the stamp's validation state
+//! - [`AdmissionValidator`]: The store-free admission composite, gating a
+//!   stamped chunk against an already-loaded batch
 //! - [`PostageContext`]: Context for batch expiry calculations
 //! - [`StoreKey`]: The key of a stamped-store entry: address, batch, stamp hash
 //! - [`ChunkStore`]: The synchronous stamp-keyed store seam, composing the
@@ -57,6 +59,7 @@
 // constraint to the `no_std` build.
 extern crate alloc;
 
+mod admission;
 mod batch;
 mod error;
 #[cfg(any(test, feature = "arbitrary"))]
@@ -74,8 +77,9 @@ mod store;
 mod util;
 
 // Core types
+pub use admission::AdmissionValidator;
 pub use batch::{Batch, BatchId, BatchParams};
-pub use error::StampError;
+pub use error::{AdmissionError, StampError};
 pub use geometry::{BatchDepth, Bucket, BucketDepth, calculate_bucket};
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
