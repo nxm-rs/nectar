@@ -27,8 +27,6 @@ nectar-governor = { workspace = true }
 nectar-manifest = { workspace = true, features = ["std"] }
 nectar-primitives = { workspace = true, features = ["std"] }
 nectar-tasks = { workspace = true, features = ["std"] }
-# The positional target the seam's load writes into.
-positioned-io = { workspace = true, optional = true }
 thiserror = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 arbitrary = { workspace = true, optional = true }
@@ -63,7 +61,7 @@ arbitrary = [
 encryption = [ "nectar-file?/encryption", "nectar-primitives/encryption" ]
 # The shared `Manifest` seam: the trie as one implementation of it, with
 # entry data joined through the file crate's shared load lane.
-manifest = [ "dep:nectar-file", "dep:positioned-io" ]
+manifest = [ "dep:nectar-file" ]
 # Raw node internals (the `hazmat` module) for fuzz harnesses and benches.
 hazmat = []
 # Single-thread send escape: relaxes the boxed trie futures off `Send` in

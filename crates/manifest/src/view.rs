@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::{ChunkRef, Reference};
-use positioned_io::WriteAt;
+use nectar_primitives::store::WriteAt;
 
 use crate::listing::{Listing, collapse_dir};
 use crate::path::ManifestPath;
@@ -194,7 +194,7 @@ pub trait ManifestView<R: Reference = ChunkRef>: MaybeSend + MaybeSync {
     /// Serves exactly what [`get`](Self::get) reports loadable; an opaque
     /// entry fails as [`NoData`](crate::ManifestError::NoData). The writes
     /// are idempotent overwrites: rerun a failed load in full.
-    fn load<K: WriteAt + MaybeSend + ?Sized>(
+    fn load<K: WriteAt + ?Sized>(
         &self,
         path: &ManifestPath,
         sink: &mut K,

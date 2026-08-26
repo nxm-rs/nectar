@@ -92,7 +92,7 @@ pub use handle::{File, Policy, Reader, Segments};
 #[cfg(feature = "manifest")]
 #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
 pub use manifest::load_reference;
-pub use positioned_io::{ReadAt, Size, WriteAt};
+pub use nectar_primitives::store::{ReadAt, WriteAt};
 pub use read::AdaptiveWindow;
 pub use read::{CollectError, LoadError, OpenError, Progress, ProgressFn, SeekPastEnd};
 #[cfg(feature = "tokio")]

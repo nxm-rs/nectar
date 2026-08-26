@@ -4,9 +4,8 @@ use nectar_manifest::ManifestError;
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::{MaybeSend, MaybeSync, TrustedGet};
-use positioned_io::WriteAt;
 
-use crate::{File, LoadError, Policy};
+use crate::{File, LoadError, Policy, WriteAt};
 
 /// Drain the file at `reference` into `sink` under `policy`, reporting a sink
 /// failure as [`ManifestError::Sink`] and any other as [`ManifestError::Data`].
@@ -20,7 +19,7 @@ pub async fn load_reference<S, K, F, const B: usize>(
 ) -> Result<(), ManifestError<F>>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
-    K: WriteAt + MaybeSend + ?Sized,
+    K: WriteAt + ?Sized,
 {
     File::<S, B>::new(store, policy)
         .load(reference, sink)

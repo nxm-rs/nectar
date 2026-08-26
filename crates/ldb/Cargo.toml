@@ -30,8 +30,6 @@ nectar-governor = { workspace = true }
 nectar-manifest = { workspace = true, optional = true }
 nectar-primitives = { workspace = true }
 nectar-tasks = { workspace = true }
-# The positional target the seam's load writes into.
-positioned-io = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -79,7 +77,6 @@ encryption = []
 manifest = [
 	"dep:nectar-file",
 	"dep:nectar-manifest",
-	"dep:positioned-io",
 	"std",
 ]
 std = [

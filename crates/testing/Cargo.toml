@@ -19,8 +19,7 @@ allocation-counter = { workspace = true, optional = true }
 futures-executor.workspace = true
 nectar-file = { workspace = true, optional = true }
 nectar-postage = { workspace = true, optional = true }
-nectar-primitives = { workspace = true, optional = true, features = ["std"] }
-positioned-io = { workspace = true }
+nectar-primitives = { workspace = true, features = ["std"] }
 serde = { workspace = true, optional = true, features = ["std", "derive"] }
 
 [dev-dependencies]
@@ -35,16 +34,14 @@ serde_json = { workspace = true, features = ["std"] }
 alloc = [ "dep:allocation-counter" ]
 
 # The instrumented store and the run header the perf examples share.
-bench = [ "dep:nectar-primitives", "dep:serde", "nectar-primitives?/std" ]
+bench = [ "dep:serde" ]
 
 # Shared split fixtures and SwarmSpec doubles. Encrypted-mode splits ride the
 # mode-generic `split_into`; callers bring their own encryption features.
 fixtures = [
 	"dep:nectar-file",
 	"dep:nectar-postage",
-	"dep:nectar-primitives",
 	"nectar-postage?/std",
-	"nectar-primitives?/std",
 ]
 
 # The wasm smoke test is the executable proof that a !Send store satisfies the

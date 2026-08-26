@@ -24,13 +24,13 @@ use nectar_testing::run;
 use rand::{Rng, rng};
 use std::hint::black_box;
 
-use nectar_file::{File, HashWindow, Policy, PutWindow, ReadAt, ReadAtSource, Size};
+use nectar_file::{File, HashWindow, Policy, PutWindow, ReadAt, ReadAtSource};
 use nectar_postage_issuer::{
     BatchId, BatchStamper, BucketDepth, MemoryIssuer, StampPipeline, Stamper,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::ChunkPut;
+use nectar_primitives::store::{BoxedError, ChunkPut};
 
 type SealedChunk = Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>;
 
@@ -52,17 +52,15 @@ impl ChunkPut<Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>> for Collect {
 struct SharedBuf(Arc<Vec<u8>>);
 
 impl ReadAt for SharedBuf {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
         let start = (offset as usize).min(self.0.len());
         let take = buf.len().min(self.0.len() - start);
         buf[..take].copy_from_slice(&self.0[start..start + take]);
         Ok(take)
     }
-}
 
-impl Size for SharedBuf {
-    fn size(&self) -> std::io::Result<Option<u64>> {
-        Ok(Some(self.0.len() as u64))
+    fn size(&self) -> Option<u64> {
+        Some(self.0.len() as u64)
     }
 }
 

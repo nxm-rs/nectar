@@ -20,9 +20,8 @@ use nectar_manifest::{
     serve_fallback,
 };
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, ContentOnlyChunkSet};
-use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
+use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet, WriteAt};
 use nectar_primitives::{Chunk, EntryRef};
-use positioned_io::WriteAt;
 
 use crate::apply::ApplyError;
 use crate::builder::Builder;
@@ -277,7 +276,7 @@ where
         Ok(served)
     }
 
-    async fn load<T: WriteAt + MaybeSend + ?Sized>(
+    async fn load<T: WriteAt + ?Sized>(
         &self,
         path: &ManifestPath,
         sink: &mut T,

@@ -13,10 +13,10 @@ use nectar_primitives::store::TrustedGet;
 use super::body_size;
 use super::error::LoadError;
 use super::frames::FileFrames;
+use crate::WriteAt;
 use crate::config::Window;
 use crate::num::u64_from_usize;
 use crate::walk::{Walk, WalkMode, WindowPolicyFn};
-use positioned_io::WriteAt;
 
 /// Progress snapshot delivered after each frame lands in the sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

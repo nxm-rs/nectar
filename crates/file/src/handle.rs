@@ -44,6 +44,7 @@ use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentOnlyChun
 use nectar_primitives::store::{ChunkPut, TrustedGet};
 use nectar_primitives::{DEFAULT_BODY_SIZE, EntryRef};
 
+use crate::WriteAt;
 use crate::config::{HashWindow, PutWindow, Window};
 use crate::geometry::Mode;
 use crate::read::{
@@ -53,7 +54,6 @@ use crate::read::{
 use crate::source::Source;
 use crate::split::{SaveError, SplitMode, SplitStats, save_source};
 use crate::walk::{Encrypted, Plain, WalkError, WalkMode, WalkStats};
-use positioned_io::WriteAt;
 
 /// Closed-loop window seed: the throughput hint an adaptive controller is
 /// built from, plus the cap it must never pass.

@@ -21,9 +21,10 @@ use nectar_file::{
     Window,
 };
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
+use nectar_primitives::store::{
+    BoxedError, ChunkGet, ChunkPut, ChunkStoreError, ContentGet, WriteAt,
+};
 use nectar_testing::{MemWriteAt, run, yield_now};
-use positioned_io::WriteAt;
 
 /// Tiny body size: fan-out 8, so a few hundred leaves already build a deep
 /// tree.
@@ -41,13 +42,9 @@ struct RecordingSink {
 }
 
 impl WriteAt for RecordingSink {
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> std::io::Result<usize> {
+    fn write_all_at(&mut self, offset: u64, data: &[u8]) -> Result<(), BoxedError> {
         self.writes.push((offset, data.len()));
-        self.inner.write_at(offset, data)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
+        self.inner.write_all_at(offset, data)
     }
 }
 

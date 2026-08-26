@@ -102,7 +102,7 @@ mod view;
 
 pub use batch::{Batch, CheckedBatch};
 pub use cursor::{PathCursor, RawCursor, RawItem};
-pub use dynamic::{DynVisit, DynWriteAt, ErasedManifest};
+pub use dynamic::{DynVisit, ErasedManifest};
 pub use error::{ErasedFormat, ErasedManifestError, ManifestError};
 pub use listing::{ListEntry, Listing, collapse_dir};
 pub use meta::{ManifestMeta, MetadataBlock, MetadataSource, MetadataView, WellKnownKey};
@@ -113,9 +113,9 @@ pub use reserved::{ReservedKey, reserved_key};
 pub use site::SiteConfig;
 pub use view::{ManifestCursor, ManifestView, MapEntry, Served, serve_fallback};
 
-// The positional target a load writes into is the positioned-io crate's,
-// re-exported so a manifest consumer needs no second dependency to name it.
-pub use positioned_io::WriteAt;
+// The positional target of the load seam is re-exported so a consumer names
+// it without a second dependency.
+pub use nectar_primitives::store::WriteAt;
 
 use core::future::Future;
 

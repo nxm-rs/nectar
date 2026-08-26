@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::vec::Vec;
 
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress, ContentOnlyChunkSet};
-use nectar_primitives::store::{ContentGet, MemoryStore};
+use nectar_primitives::store::{BoxedError, ContentGet, MemoryStore};
 use nectar_primitives::{ChunkRef, EntryRef};
 use nectar_testing::run;
 
@@ -14,7 +14,8 @@ use crate::config::Window;
 use crate::handle::{File, Policy};
 use crate::read::{CollectError, LoadError};
 use nectar_testing::MemWriteAt;
-use positioned_io::WriteAt;
+
+use crate::WriteAt;
 
 type Store = MemoryStore<AnyChunkSet<TINY>>;
 
@@ -27,13 +28,9 @@ struct RecordingSink {
 }
 
 impl WriteAt for RecordingSink {
-    fn write_at(&mut self, pos: u64, buf: &[u8]) -> std::io::Result<usize> {
+    fn write_all_at(&mut self, pos: u64, buf: &[u8]) -> Result<(), BoxedError> {
         self.writes.push((pos, buf.len()));
-        self.inner.write_at(pos, buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
+        self.inner.write_all_at(pos, buf)
     }
 }
 
@@ -159,12 +156,8 @@ fn a_policy_window_reaches_the_walk() {
 struct DeadSink;
 
 impl WriteAt for DeadSink {
-    fn write_at(&mut self, _offset: u64, _data: &[u8]) -> std::io::Result<usize> {
-        Err(std::io::Error::other("sink gone"))
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+    fn write_all_at(&mut self, _offset: u64, _data: &[u8]) -> Result<(), BoxedError> {
+        Err(std::io::Error::other("sink gone").into())
     }
 }
 

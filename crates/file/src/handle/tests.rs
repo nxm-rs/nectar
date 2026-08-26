@@ -7,13 +7,12 @@ use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{ChunkPut, ChunkStoreError};
+use nectar_primitives::store::{BoxedError, ChunkPut, ChunkStoreError};
 use nectar_testing::{run, yield_now};
 
 use super::{File, Policy};
+use crate::ReadAt;
 use crate::config::PutWindow;
-use positioned_io::{ReadAt, Size};
-
 use crate::source::{ReadAtError, ReadAtSource};
 use crate::split::{SaveError, SplitError, SplitMode};
 use crate::testutil::reject_all;
@@ -27,7 +26,7 @@ async fn split_read_at<R, S, M, const B: usize>(
     window: PutWindow,
 ) -> Result<M::Root, SaveError<S::Error, ReadAtError>>
 where
-    R: ReadAt + Size,
+    R: ReadAt,
     S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     M: SplitMode + Default,
 {
@@ -283,13 +282,11 @@ fn encrypted_ingest_reads_back_through_the_walk() {
 struct SharedBytes(bytes::Bytes);
 
 impl ReadAt for SharedBytes {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
         self.0.as_ref().read_at(offset, buf)
     }
-}
 
-impl Size for SharedBytes {
-    fn size(&self) -> std::io::Result<Option<u64>> {
+    fn size(&self) -> Option<u64> {
         self.0.as_ref().size()
     }
 }
@@ -335,17 +332,15 @@ struct FailingSource {
 }
 
 impl ReadAt for FailingSource {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
         if offset >= self.fail_at {
-            return Err(std::io::Error::other("device gone"));
+            return Err(std::io::Error::other("device gone").into());
         }
         self.data.read_at(offset, buf)
     }
-}
 
-impl Size for FailingSource {
-    fn size(&self) -> std::io::Result<Option<u64>> {
-        Size::size(&self.data)
+    fn size(&self) -> Option<u64> {
+        u64::try_from(self.data.len()).ok()
     }
 }
 
@@ -379,14 +374,12 @@ struct LyingSource {
 }
 
 impl ReadAt for LyingSource {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
         self.data.read_at(offset, buf)
     }
-}
 
-impl Size for LyingSource {
-    fn size(&self) -> std::io::Result<Option<u64>> {
-        Ok(Some(self.claimed))
+    fn size(&self) -> Option<u64> {
+        Some(self.claimed)
     }
 }
 
@@ -417,14 +410,12 @@ fn a_source_ending_early_is_a_short_read() {
 struct OverrunSource;
 
 impl ReadAt for OverrunSource {
-    fn read_at(&self, _offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read_at(&self, _offset: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
         Ok(buf.len() + 1)
     }
-}
 
-impl Size for OverrunSource {
-    fn size(&self) -> std::io::Result<Option<u64>> {
-        Ok(Some(u64::try_from(TINY).unwrap()))
+    fn size(&self) -> Option<u64> {
+        u64::try_from(TINY).ok()
     }
 }
 
@@ -444,23 +435,21 @@ fn an_overlong_read_count_is_refused() {
     );
 }
 
-/// Source whose sizing itself fails.
+/// Source that does not know its length.
 struct UnsizedSource;
 
 impl ReadAt for UnsizedSource {
-    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> Result<usize, BoxedError> {
         Ok(0)
     }
-}
 
-impl Size for UnsizedSource {
-    fn size(&self) -> std::io::Result<Option<u64>> {
-        Err(std::io::Error::other("no metadata"))
+    fn size(&self) -> Option<u64> {
+        None
     }
 }
 
 #[test]
-fn a_sizing_failure_is_typed() {
+fn an_unknown_size_is_typed() {
     let store = TestStore::<TINY>::new(0);
     let error = run(split_read_at::<_, _, Plain, TINY>(
         UnsizedSource,
@@ -472,7 +461,7 @@ fn a_sizing_failure_is_typed() {
         matches!(
             error,
             SaveError::Source {
-                source: ReadAtError::Length { .. }
+                source: ReadAtError::LengthUnknown
             }
         ),
         "got {error:?}"

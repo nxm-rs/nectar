@@ -579,7 +579,8 @@ fn download_fills_a_sink_and_reports_progress() {
 #[test]
 fn encrypted_download_overwrites_a_prefilled_sink() {
     use nectar_testing::MemWriteAt;
-    use positioned_io::WriteAt as _;
+
+    use crate::WriteAt as _;
 
     let data = fill(11 * TINY + 63);
     let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
@@ -589,7 +590,7 @@ fn encrypted_download_overwrites_a_prefilled_sink() {
     .unwrap();
 
     let mut sink = MemWriteAt::new();
-    sink.write_at(0, &vec![0xa5; data.len()]).unwrap();
+    sink.write_all_at(0, &vec![0xa5; data.len()]).unwrap();
     let written = run(enc_file.download().run(&mut sink)).unwrap();
     assert_eq!(written, data.len() as u64);
     assert_eq!(sink.as_bytes(), data);

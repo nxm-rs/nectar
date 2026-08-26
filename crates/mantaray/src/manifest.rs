@@ -26,8 +26,7 @@ use nectar_manifest::{
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
-use nectar_primitives::store::{ContentGet, MaybeSend, MaybeSync, TrustedGet};
-use positioned_io::WriteAt;
+use nectar_primitives::store::{ContentGet, MaybeSend, MaybeSync, TrustedGet, WriteAt};
 
 use crate::cursor::TrieListing;
 use crate::editor::ManifestEditor;
@@ -301,7 +300,7 @@ where
         collapse_dir(dir.clone(), PathCursor::new(self.walk(dir.as_bytes())))
     }
 
-    fn load<K: WriteAt + MaybeSend + ?Sized>(
+    fn load<K: WriteAt + ?Sized>(
         &self,
         path: &ManifestPath,
         sink: &mut K,

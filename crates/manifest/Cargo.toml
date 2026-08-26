@@ -26,7 +26,6 @@ nectar-marker = { workspace = true }
 # through.
 nectar-primitives = { workspace = true }
 nectar-tasks = { workspace = true }
-positioned-io = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

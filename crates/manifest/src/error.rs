@@ -75,8 +75,8 @@ impl<F> ManifestError<F> {
     }
 
     /// Box a sink failure behind the seam.
-    pub fn sink<E: core::error::Error + MaybeSend + MaybeSync + 'static>(error: E) -> Self {
-        Self::Sink(Box::new(error))
+    pub fn sink(error: impl Into<BoxedError>) -> Self {
+        Self::Sink(error.into())
     }
 }
 

@@ -1,9 +1,9 @@
 //! Typed failures of the read facade.
 
 use alloc::collections::TryReserveError;
-use std::io;
 
 use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::store::BoxedError;
 
 use crate::walk::{DecodeError, WalkError};
 
@@ -37,8 +37,8 @@ pub enum LoadError<E> {
     Sink {
         /// Range-relative offset of the failed write.
         offset: u64,
-        /// Io error behind the failure.
-        source: io::Error,
+        /// Seam error behind the failure.
+        source: BoxedError,
     },
 }
 

@@ -14,8 +14,8 @@ use core::ops::ControlFlow;
 use futures_util::StreamExt;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::ChunkRef;
+use nectar_primitives::store::WriteAt;
 use nectar_tasks::BoxFuture;
-use positioned_io::WriteAt;
 
 use crate::Manifest;
 use crate::batch::Batch;
@@ -33,15 +33,6 @@ fn erase<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
 ) -> ErasedManifestError {
     error.map_format(|format| ErasedFormat(Box::new(format)))
 }
-
-/// The object-safe positional target of [`ErasedManifest::dyn_load`].
-///
-/// An object name carries its marker bounds only through a principal trait,
-/// so the erased sink borrows one over [`WriteAt`] with no behaviour of its
-/// own. Blanket-implemented, so any positional target is usable.
-pub trait DynWriteAt: WriteAt + MaybeSend {}
-
-impl<T: WriteAt + MaybeSend + ?Sized> DynWriteAt for T {}
 
 /// Object-safe visitor for [`ErasedManifest::dyn_for_each`]:
 /// blanket-implemented for closures, so a caller passes
@@ -107,7 +98,7 @@ pub trait ErasedManifest: MaybeSend + MaybeSync {
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-        sink: &'a mut (dyn DynWriteAt + 'a),
+        sink: &'a mut (dyn WriteAt + 'a),
     ) -> BoxFuture<'a, Result<(), ErasedManifestError>>;
 
     /// The site-level documents the manifest declares, each absent as `None`.
@@ -218,7 +209,7 @@ where
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-        sink: &'a mut (dyn DynWriteAt + 'a),
+        sink: &'a mut (dyn WriteAt + 'a),
     ) -> BoxFuture<'a, Result<(), ErasedManifestError>> {
         Box::pin(async move { self.at(*root).load(path, sink).await.map_err(erase) })
     }

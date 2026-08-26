@@ -1,8 +1,9 @@
-//! The in-memory positional target the positional-io swaps test against.
+//! The in-memory positional target the rest of the workspace tests against.
 
 use std::io;
+use std::vec::Vec;
 
-use positioned_io::{ReadAt, Size, WriteAt};
+use nectar_primitives::store::{BoxedError, ReadAt, WriteAt};
 
 /// Growable in-memory positional bytes; unwritten gaps below the highest
 /// written end read as zero.
@@ -43,7 +44,7 @@ impl MemWriteAt {
 }
 
 impl ReadAt for MemWriteAt {
-    fn read_at(&self, pos: u64, buf: &mut [u8]) -> io::Result<usize> {
+    fn read_at(&self, pos: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
         let Ok(pos) = usize::try_from(pos) else {
             return Ok(0);
         };
@@ -53,46 +54,32 @@ impl ReadAt for MemWriteAt {
         let take = tail.len().min(buf.len());
         if take == 0 {
             return Ok(0);
-        }
+        };
         buf[..take].copy_from_slice(&tail[..take]);
         Ok(take)
+    }
+
+    fn size(&self) -> Option<u64> {
+        u64::try_from(self.data.len()).ok()
     }
 }
 
 impl WriteAt for MemWriteAt {
-    fn write_at(&mut self, pos: u64, buf: &[u8]) -> io::Result<usize> {
+    fn write_all_at(&mut self, pos: u64, buf: &[u8]) -> Result<(), BoxedError> {
         let Ok(pos) = usize::try_from(pos) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "write offset overflows the address space",
-            ));
+            )
+            .into());
         };
         let end = pos
             .checked_add(buf.len())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "write range overflows"))?;
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        if end > self.data.len() {
+        if !buf.is_empty() && end > self.data.len() {
             self.data.resize(end, 0);
         }
         self.data[pos..end].copy_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
         Ok(())
-    }
-}
-
-impl Size for MemWriteAt {
-    fn size(&self) -> io::Result<Option<u64>> {
-        let Ok(size) = u64::try_from(self.data.len()) else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "size overflows",
-            ));
-        };
-        Ok(Some(size))
     }
 }

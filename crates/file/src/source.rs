@@ -12,10 +12,8 @@ use core::convert::Infallible;
 use core::task::{Context, Poll};
 
 use nectar_marker::{MaybeSend, MaybeSync};
-use positioned_io::{ReadAt, Size};
-use std::io;
+use nectar_primitives::store::{BoxedError, ReadAt};
 
-// Only the positional adapter measures lengths.
 use crate::num::u64_from_usize;
 
 /// Pull-based byte source feeding one write.
@@ -74,12 +72,6 @@ impl<T: Source + ?Sized> Source for &mut T {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReadAtError {
-    /// Sizing the source failed.
-    #[error("source length unavailable")]
-    Length {
-        /// Io error behind the failure.
-        source: io::Error,
-    },
     /// The source reports no length.
     #[error("source reports no length")]
     LengthUnknown,
@@ -88,8 +80,8 @@ pub enum ReadAtError {
     Read {
         /// Offset of the failed read.
         offset: u64,
-        /// Io error behind the failure.
-        source: io::Error,
+        /// Seam error behind the failure.
+        source: BoxedError,
     },
     /// The source reported its end before the declared length was reached.
     #[error("short read at offset {offset}: {remaining} bytes missing")]
@@ -139,17 +131,13 @@ impl<R> ReadAtSource<R> {
     }
 }
 
-impl<R: ReadAt + Size> ReadAtSource<R> {
+impl<R: ReadAt> ReadAtSource<R> {
     /// The declared length, sized once and memoized.
     fn declared(&mut self) -> Result<u64, ReadAtError> {
         if let Some(len) = self.len {
             return Ok(len);
         }
-        let size = self
-            .source
-            .size()
-            .map_err(|source| ReadAtError::Length { source })?;
-        let Some(len) = size else {
+        let Some(len) = self.source.size() else {
             return Err(ReadAtError::LengthUnknown);
         };
         self.len = Some(len);
@@ -174,7 +162,7 @@ impl<R: ReadAt + Size> ReadAtSource<R> {
     }
 }
 
-impl<R: ReadAt + Size> Source for ReadAtSource<R> {
+impl<R: ReadAt> Source for ReadAtSource<R> {
     type Error = ReadAtError;
 
     fn poll_fill(
@@ -247,13 +235,13 @@ impl<R> AsyncReadSource<R> {
 
 #[cfg(feature = "tokio")]
 impl<R: ::tokio::io::AsyncRead + Unpin> Source for AsyncReadSource<R> {
-    type Error = io::Error;
+    type Error = ::tokio::io::Error;
 
     fn poll_fill(
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-    ) -> Poll<Result<usize, io::Error>> {
+    ) -> Poll<Result<usize, ::tokio::io::Error>> {
         let mut read = ::tokio::io::ReadBuf::new(buf);
         match core::pin::Pin::new(&mut self.inner).poll_read(cx, &mut read) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(read.filled().len())),
@@ -303,7 +291,7 @@ mod tests {
         assert_eq!(&buf[..20], &data[80..]);
         assert_eq!(slice.read_at(100, &mut buf).unwrap(), 0);
         assert_eq!(slice.read_at(u64::MAX, &mut buf).unwrap(), 0);
-        assert_eq!(slice.size().unwrap(), Some(100));
+        assert_eq!(slice.size(), Some(100));
     }
 
     #[test]
@@ -319,7 +307,7 @@ mod tests {
     }
 
     impl ReadAt for UnknownLength {
-        fn read_at(&self, pos: u64, buf: &mut [u8]) -> io::Result<usize> {
+        fn read_at(&self, pos: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
             let Ok(pos) = usize::try_from(pos) else {
                 return Ok(0);
             };
@@ -330,11 +318,9 @@ mod tests {
             buf[..take].copy_from_slice(&tail[..take]);
             Ok(take)
         }
-    }
 
-    impl Size for UnknownLength {
-        fn size(&self) -> io::Result<Option<u64>> {
-            Ok(None)
+        fn size(&self) -> Option<u64> {
+            None
         }
     }
 
