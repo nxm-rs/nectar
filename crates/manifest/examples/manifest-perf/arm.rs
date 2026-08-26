@@ -7,8 +7,9 @@ use std::ops::Bound;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use nectar_ldb::Database;
-use nectar_manifest::{Batch, Manifest, ManifestCursor, ManifestPath, ManifestView};
+use nectar_manifest::{Batch, Manifest, ManifestPath, ManifestView};
 use nectar_mantaray::MantarayManifest;
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -261,7 +262,11 @@ where
         let mut drained = 0u64;
         let cost = self.cost(0, || {
             let mut cursor = run(view.range(bounds))?;
-            while run(ManifestCursor::next(&mut cursor))?.is_some() {
+            loop {
+                let Some(item) = run(cursor.next()) else {
+                    break;
+                };
+                item?;
                 drained = drained.saturating_add(1);
             }
             Ok(())
@@ -284,7 +289,11 @@ where
         let view = self.manifest.at(self.root);
         let mut cursor = run(view.iter())?;
         let mut out = Vec::new();
-        while let Some((path, _)) = run(ManifestCursor::next(&mut cursor))? {
+        loop {
+            let Some(item) = run(cursor.next()) else {
+                break;
+            };
+            let (path, _) = item?;
             out.push(path);
         }
         Ok(out)

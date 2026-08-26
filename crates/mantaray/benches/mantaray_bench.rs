@@ -6,7 +6,7 @@
 )]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nectar_mantaray::{Cursor, ManifestEditor, MemoryStore, NodeLoadSaver, Reader, hazmat};
+use nectar_mantaray::{ManifestEditor, MemoryStore, NodeLoadSaver, Reader, TrieListing, hazmat};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
 use nectar_primitives::store::ChunkGet;
@@ -187,7 +187,7 @@ fn bench_decode(c: &mut Criterion) {
 /// Drain the ordered listing cursor, returning the entry count.
 fn drain_cursor(root: ChunkAddress, loadsaver: &LoadSaver) -> u32 {
     run(async {
-        let mut cursor: Cursor<LoadSaver> = Cursor::new(loadsaver.clone(), root);
+        let mut cursor: TrieListing<LoadSaver> = TrieListing::new(loadsaver.clone(), root);
         let mut count = 0u32;
         while let Some(entry) = cursor.next().await {
             entry.unwrap();

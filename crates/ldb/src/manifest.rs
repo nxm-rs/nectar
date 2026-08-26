@@ -1,32 +1,37 @@
 //! The [`Manifest`] seam, implemented directly on [`Database`], [`View`] and
-//! [`Cursor`]: keyed by path, reserved keys filtered, a checked batch folded
-//! through one [`Database::edit`] changeset. Inherent methods win on the
-//! concrete types, so a seam call names the trait: `Manifest::at(&db, root)`.
+//! [`ScanRawCursor`]: keyed by path, reserved keys filtered, a checked batch
+//! folded through one [`Database::edit`] changeset. Inherent methods win on
+//! the concrete types, so a seam call names the trait:
+//! `Manifest::at(&db, root)`.
 
 use alloc::vec::Vec;
 use core::future::Future;
 use core::ops::Bound;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use bytes::Bytes;
+use futures_util::Stream;
+use futures_util::StreamExt;
 use nectar_file::load_reference;
 use nectar_manifest::{
-    Batch, DataSink, ListEntry, Listing, Manifest, ManifestCursor, ManifestError, ManifestOp,
-    ManifestPath, ManifestView, MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem,
-    Served, SinkError, SiteConfig, serve_fallback,
+    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath,
+    ManifestView, MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem, Served,
+    SinkError, SiteConfig, serve_fallback,
 };
-use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
+use nectar_primitives::chunk::{ChunkAddress, ChunkRef, ContentOnlyChunkSet};
 use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{Chunk, EntryRef};
 
 use crate::apply::ApplyError;
 use crate::builder::Builder;
 use crate::db::{Database, View};
-use crate::folder::{DirEntry, Served as NativeServed};
+use crate::folder::{DirEntry, FolderServed};
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, Metadata};
 use crate::node::{Node, NodeRef};
 use crate::reader::ReaderError;
-use crate::scan::Cursor;
+use crate::scan::ScanCursor;
 use crate::store::{Seal, StoreError, load_node, materialize_traced, save_node};
 use crate::value::{Entry, Key};
 
@@ -49,7 +54,7 @@ impl<S, K, R> Manifest<R> for Database<S, K, V1>
 where
     S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + Clone + MaybeSend + MaybeSync + 'static,
     K: Seal<R> + MaybeSend + MaybeSync,
-    R: NodeRef,
+    R: NodeRef + Unpin,
 {
     /// The typed key registry, absent as `None`.
     type Metadata = Option<Metadata<V1>>;
@@ -159,13 +164,13 @@ where
 impl<'a, S, R> ManifestView<R> for View<'a, S, V1, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + Clone + MaybeSend + MaybeSync + 'static,
-    R: NodeRef,
+    R: NodeRef + Unpin,
 {
     type Metadata = Option<Metadata<V1>>;
 
     type Error = ManifestError<LdbFormatError>;
 
-    type Cursor = PathCursor<Cursor<'a, S, V1, R>>;
+    type Cursor = PathCursor<ScanRawCursor<'a, S, R>, R>;
 
     async fn get(&self, path: &ManifestPath) -> Result<Option<MapEntry<R>>, Self::Error> {
         let Some(key) = path.content_key().map(Key::from) else {
@@ -203,10 +208,11 @@ where
             // The seek landed on a reserved key: the greatest content key
             // below it answers.
             Some(_) => {
-                let mut cursor =
-                    PathCursor::new(self.range((Bound::Unbounded, Bound::Included(key))).await?);
+                let mut cursor = PathCursor::new(ScanRawCursor::new(
+                    self.range((Bound::Unbounded, Bound::Included(key))).await?,
+                ));
                 let mut last = None;
-                while let Some(pair) = ManifestCursor::next(&mut cursor).await? {
+                while let Some(pair) = cursor.next().await.transpose()? {
                     last = Some(pair);
                 }
                 Ok(last)
@@ -247,17 +253,17 @@ where
             return serve_fallback(self, path).await;
         }
         let served = match self.serve(&Key::from(path.as_bytes())).await? {
-            NativeServed::Exact { key, entry } => Served::Exact {
+            FolderServed::Exact { key, entry } => Served::Exact {
                 path: path_of(&key),
                 entry: seam_entry(entry),
             },
-            NativeServed::Index { key, entry } => Served::Index {
+            FolderServed::Index { key, entry } => Served::Index {
                 path: path_of(&key),
                 entry: seam_entry(entry),
             },
             // An error document set to a reserved path names no content,
             // exactly as the seam's own probe would read it.
-            NativeServed::Error { key, entry }
+            FolderServed::Error { key, entry }
                 if !ManifestPath::is_reserved_bytes(key.as_bytes()) =>
             {
                 Served::Error {
@@ -265,7 +271,7 @@ where
                     entry: seam_entry(entry),
                 }
             }
-            NativeServed::Error { .. } | NativeServed::Missing => Served::Missing,
+            FolderServed::Error { .. } | FolderServed::Missing => Served::Missing,
         };
         Ok(served)
     }
@@ -304,7 +310,7 @@ where
     }
 
     async fn iter(&self) -> Result<Self::Cursor, Self::Error> {
-        Ok(PathCursor::new(self.iter().await?))
+        Ok(PathCursor::new(ScanRawCursor::new(self.iter().await?)))
     }
 
     async fn range(
@@ -314,26 +320,57 @@ where
         let key = |path: ManifestPath| Key::from(path.into_bytes());
         // The native walk seeks to the bounds, so the seam wrapper only skips
         // the reserved keys.
-        Ok(PathCursor::new(
+        Ok(PathCursor::new(ScanRawCursor::new(
             self.range((bounds.0.map(key), bounds.1.map(key))).await?,
-        ))
+        )))
     }
 }
 
-/// The database's raw ordered walk: every stored key, the reserved slots
-/// included.
-impl<S, R> RawCursor<R> for Cursor<'_, S, V1, R>
+/// The database's raw ordered walk for the seam: every stored key, the
+/// reserved slots included, as byte keys with their seam entries.
+#[derive(Debug)]
+pub struct ScanRawCursor<'a, S, R: NodeRef = ChunkRef> {
+    walk: ScanCursor<'a, S, V1, R>,
+}
+
+impl<'a, S, R> ScanRawCursor<'a, S, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
     R: NodeRef,
 {
-    type Error = ManifestError<LdbFormatError>;
-
-    async fn next(&mut self) -> Result<Option<RawItem<R>>, Self::Error> {
-        Ok(Cursor::next(self)
-            .await?
-            .map(|(key, entry)| (key.as_bytes().to_vec(), seam_entry(entry))))
+    /// A raw walk over `walk`.
+    #[must_use]
+    pub const fn new(walk: ScanCursor<'a, S, V1, R>) -> Self {
+        Self { walk }
     }
+}
+
+impl<'a, S, R> Stream for ScanRawCursor<'a, S, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
+    R: NodeRef + Unpin,
+{
+    type Item = Result<RawItem<R>, ManifestError<LdbFormatError>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.walk).poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error.into()))),
+            Poll::Ready(Some(Ok((key, entry)))) => {
+                Poll::Ready(Some(Ok((key.as_bytes().to_vec(), seam_entry(entry)))))
+            }
+        }
+    }
+}
+
+impl<'a, S, R> RawCursor<R> for ScanRawCursor<'a, S, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
+    R: NodeRef + Unpin,
+{
+    type Error = ManifestError<LdbFormatError>;
 }
 
 /// One database key as the path a read answers with.

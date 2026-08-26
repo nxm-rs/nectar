@@ -13,12 +13,12 @@ use nectar_primitives::store::{ChunkPut, MaybeSync, TrustedGet};
 use nectar_primitives::{Chunk, ChunkRef, ContentOnlyChunkSet};
 
 use crate::apply::{ApplyError, Changeset, apply};
-use crate::folder::{Listing, Served, Website, dir_at};
+use crate::folder::{FolderCursor, FolderServed, Website, dir_at};
 use crate::format::{Format, V1};
 use crate::meta::{Metadata, MetadataKey};
 use crate::node::NodeRef;
 use crate::reader::{Reader, ReaderError};
-use crate::scan::{Cursor, half_open};
+use crate::scan::{ScanCursor, half_open};
 use crate::store::{Plaintext, Seal};
 use crate::value::{Entry, Key};
 
@@ -266,7 +266,7 @@ where
     }
 
     /// Resolve a request path to the entry a website server would return.
-    pub async fn serve(&self, path: &Key) -> Result<Served<F>, ReaderError> {
+    pub async fn serve(&self, path: &Key) -> Result<FolderServed<F>, ReaderError> {
         self.reader().serve(&self.root, path).await
     }
 }
@@ -279,8 +279,8 @@ where
 {
     /// Every `(key, value)` in ascending key order. The walk outlives the
     /// view it was opened through.
-    pub async fn iter(&self) -> Result<Cursor<'a, S, F, R>, ReaderError> {
-        Cursor::seek(self.store, &self.root, &[], None).await
+    pub async fn iter(&self) -> Result<ScanCursor<'a, S, F, R>, ReaderError> {
+        ScanCursor::seek(self.store, &self.root, &[], None).await
     }
 
     /// Every `(key, value)` within `bounds`, in ascending key order. Keys
@@ -288,20 +288,20 @@ where
     pub async fn range(
         &self,
         bounds: impl RangeBounds<Key>,
-    ) -> Result<Cursor<'a, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'a, S, F, R>, ReaderError> {
         let (start, end) = half_open(&bounds);
-        Cursor::seek(self.store, &self.root, &start, end).await
+        ScanCursor::seek(self.store, &self.root, &start, end).await
     }
 
     /// Every `(key, value)` whose key starts with `prefix`, in ascending order.
-    pub async fn prefix(&self, prefix: &Key) -> Result<Cursor<'a, S, F, R>, ReaderError> {
+    pub async fn prefix(&self, prefix: &Key) -> Result<ScanCursor<'a, S, F, R>, ReaderError> {
         let end = crate::scan::successor(prefix.as_bytes());
-        Cursor::seek(self.store, &self.root, prefix.as_bytes(), end).await
+        ScanCursor::seek(self.store, &self.root, prefix.as_bytes(), end).await
     }
 
     /// The immediate children of the directory named by `dir` in key order,
     /// collapsing deeper keys at the next separator.
-    pub async fn dir(&self, dir: &Key) -> Result<Listing<'a, S, F, R>, ReaderError> {
+    pub async fn dir(&self, dir: &Key) -> Result<FolderCursor<'a, S, F, R>, ReaderError> {
         dir_at(self.store, &self.root, dir).await
     }
 }

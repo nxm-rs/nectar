@@ -10,18 +10,25 @@
 //! root's typed metadata, so the conventions travel as registered metadata,
 //! never magic keys.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::fmt::Debug;
+use core::future::poll_fn;
 use core::mem::size_of;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use bytes::Bytes;
+use futures_util::Stream;
 use nectar_primitives::store::{MaybeSync, TrustedGet};
 use nectar_primitives::{ChunkRef, ContentOnlyChunkSet};
+use nectar_tasks::BoxFuture;
 
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, MetadataKey};
 use crate::node::{Node, NodeRef};
 use crate::reader::{Reader, ReaderError};
-use crate::scan::{Cursor, successor};
+use crate::scan::{ScanCursor, successor};
 use crate::store::load_node;
 use crate::value::{Entry, Key};
 
@@ -62,13 +69,16 @@ impl<F: Format> DirEntry<F> {
     }
 }
 
+/// The re-seek of a named subtree, in place of the walked cursor until it
+/// lands.
+type SeekFuture<'a, S, F, R> = BoxFuture<'a, Result<ScanCursor<'a, S, F, R>, ReaderError>>;
+
 /// A streaming listing of one directory's immediate children in key order.
 ///
 /// Deeper keys collapse at the next separator into one `Dir` entry, and the
 /// walk seeks past each named subtree rather than descending it, so a directory
 /// of any width or depth lists in O(depth) retained state and no value fetch.
-#[derive(Debug)]
-pub struct Listing<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
+pub struct FolderCursor<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
     root: R,
     /// The exclusive bound of the directory's prefix range.
@@ -82,53 +92,103 @@ pub struct Listing<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     dir_len: usize,
     /// Set once a named subtree has no successor, so the walk stops.
     done: bool,
-    cursor: Cursor<'a, S, F, R>,
+    /// The re-seek of a named subtree, in place of `cursor` until it lands.
+    seek: Option<SeekFuture<'a, S, F, R>>,
+    cursor: ScanCursor<'a, S, F, R>,
 }
 
-impl<S, F, R> Listing<'_, S, F, R>
+impl<S, F, R> Debug for FolderCursor<'_, S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FolderCursor")
+            .field("root", &self.root)
+            .field("end", &self.end)
+            .field("base", &self.base)
+            .field("done", &self.done)
+            .field("seek_in_flight", &self.seek.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S, F, R> FolderCursor<'_, S, F, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+    R: NodeRef + Unpin,
+{
     /// The next immediate child of the directory in key order, or `None` at its
     /// end.
+    pub async fn next(&mut self) -> Result<Option<DirEntry<F>>, ReaderError> {
+        poll_fn(|cx| self.poll_step(cx)).await.transpose()
+    }
+
+    /// One poll of the listing walk.
     ///
     /// Naming a subdirectory reseeks the walk to the least key past that
     /// subtree, so the collapsed keys are never revisited and the value chunks
-    /// are never pulled.
-    pub async fn next(&mut self) -> Result<Option<DirEntry<F>>, ReaderError> {
+    /// are never pulled; the re-seek runs alongside the walk until it lands.
+    fn poll_step(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<DirEntry<F>, ReaderError>>> {
         loop {
-            if self.done {
-                return Ok(None);
-            }
-            let Some((key, entry)) = self.cursor.next().await? else {
-                return Ok(None);
-            };
-            let full = self.full_key(key);
-            let bytes = full.as_bytes();
-            let suffix = bytes.get(self.dir_len..).unwrap_or(&[]);
-            // The directory path itself is not one of its own children.
-            if suffix.is_empty() {
-                continue;
-            }
-            match suffix.iter().position(|&byte| byte == F::SEPARATOR) {
-                None => return Ok(Some(DirEntry::File { key: full, entry })),
-                Some(cut) => {
-                    let through = self.dir_len.saturating_add(cut).saturating_add(1);
-                    let dir = bytes.get(..through).unwrap_or(bytes);
-                    let dir_key = Key::from(dir);
-                    match successor(dir) {
-                        Some(start) => {
-                            // The cursor walks below `base`, so a reseek strips
-                            // the shared base the delegated subtree omits.
-                            let rel = start.get(self.base.len()..).unwrap_or(&[]);
-                            self.cursor =
-                                Cursor::seek(self.store, &self.root, rel, self.end.clone()).await?;
-                        }
-                        None => self.done = true,
+            if let Some(outcome) = self.seek.as_mut().map(|seek| seek.as_mut().poll(cx)) {
+                match outcome {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok(cursor)) => {
+                        self.seek = None;
+                        self.cursor = cursor;
+                        continue;
                     }
-                    return Ok(Some(DirEntry::Dir { key: dir_key }));
+                    Poll::Ready(Err(error)) => return Poll::Ready(Some(Err(error))),
+                }
+            }
+            if self.done {
+                return Poll::Ready(None);
+            }
+            let step = {
+                let cursor = &mut self.cursor;
+                Pin::new(cursor).poll_next(cx)
+            };
+            match step {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
+                Poll::Ready(Some(Ok((key, entry)))) => {
+                    let full = self.full_key(key);
+                    let bytes = full.as_bytes();
+                    let suffix = bytes.get(self.dir_len..).unwrap_or(&[]);
+                    // The directory path itself is not one of its own children.
+                    if suffix.is_empty() {
+                        continue;
+                    }
+                    match suffix.iter().position(|&byte| byte == F::SEPARATOR) {
+                        None => return Poll::Ready(Some(Ok(DirEntry::File { key: full, entry }))),
+                        Some(cut) => {
+                            let through = self.dir_len.saturating_add(cut).saturating_add(1);
+                            let dir = bytes.get(..through).unwrap_or(bytes);
+                            let dir_key = Key::from(dir);
+                            match successor(dir) {
+                                Some(start) => {
+                                    // The cursor walks below `base`, so a reseek strips
+                                    // the shared base the delegated subtree omits.
+                                    let rel = start.get(self.base.len()..).unwrap_or(&[]).to_vec();
+                                    let store = self.store;
+                                    let root = self.root.clone();
+                                    let end = self.end.clone();
+                                    self.seek = Some(Box::pin(async move {
+                                        ScanCursor::seek(store, &root, rel.as_slice(), end).await
+                                    }));
+                                }
+                                None => self.done = true,
+                            }
+                            return Poll::Ready(Some(Ok(DirEntry::Dir { key: dir_key })));
+                        }
+                    }
                 }
             }
         }
@@ -145,6 +205,20 @@ where
         bytes.extend_from_slice(&self.base);
         bytes.extend_from_slice(key.as_bytes());
         Key::from(bytes)
+    }
+}
+
+impl<'a, S, F, R> Stream for FolderCursor<'a, S, F, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+    R: NodeRef + Unpin,
+{
+    /// One immediate child of the directory in key order; `None` at its end.
+    type Item = Result<DirEntry<F>, ReaderError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().poll_step(cx)
     }
 }
 
@@ -174,7 +248,7 @@ impl Website {
 
 /// What serving a request path resolves to under the website conventions.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Served<F: Format = V1> {
+pub enum FolderServed<F: Format = V1> {
     /// The path matched a key exactly.
     Exact {
         /// The matched key.
@@ -200,7 +274,7 @@ pub enum Served<F: Format = V1> {
     Missing,
 }
 
-impl<F: Format> Served<F> {
+impl<F: Format> FolderServed<F> {
     /// The resolved value, or `None` when nothing matched.
     #[must_use]
     pub const fn entry(&self) -> Option<&Entry<F>> {
@@ -236,7 +310,7 @@ where
     /// `dir` is used as a key prefix: the root is the empty key and a nested
     /// directory conventionally ends with the separator. Only the trie nodes on
     /// the frontier are fetched; the value chunks a listing names are not.
-    pub async fn dir(&self, root: &R, dir: &Key) -> Result<Listing<'_, S, F, R>, ReaderError> {
+    pub async fn dir(&self, root: &R, dir: &Key) -> Result<FolderCursor<'_, S, F, R>, ReaderError> {
         dir_at(self.store(), root, dir).await
     }
 
@@ -260,9 +334,9 @@ where
     /// The index document is a filename joined below each directory, so
     /// `"docs/"` resolves `"docs/index.html"`. The error document is one whole
     /// key: `"404.html"`.
-    pub async fn serve(&self, root: &R, path: &Key) -> Result<Served<F>, ReaderError> {
+    pub async fn serve(&self, root: &R, path: &Key) -> Result<FolderServed<F>, ReaderError> {
         if let Some(entry) = self.get(root, path).await? {
-            return Ok(Served::Exact {
+            return Ok(FolderServed::Exact {
                 key: path.clone(),
                 entry,
             });
@@ -271,28 +345,28 @@ where
         if let Some(index) = site.index {
             let key = directory_index::<F>(path.as_bytes(), &index);
             if let Some(entry) = self.get(root, &key).await? {
-                return Ok(Served::Index { key, entry });
+                return Ok(FolderServed::Index { key, entry });
             }
         }
         if let Some(error) = site.error {
             let key = Key::from(&error[..]);
             if let Some(entry) = self.get(root, &key).await? {
-                return Ok(Served::Error { key, entry });
+                return Ok(FolderServed::Error { key, entry });
             }
         }
-        Ok(Served::Missing)
+        Ok(FolderServed::Missing)
     }
 }
 
 /// One directory level over `store`, listed from the database rooted at `root`.
 ///
-/// The returned [`Listing`] keeps the caller's store reference, so it outlives
+/// The returned [`FolderCursor`] keeps the caller's store reference, so it outlives
 /// the handle it was opened through.
 pub(crate) async fn dir_at<'a, S, F, R>(
     store: &'a S,
     root: &R,
     dir: &Key,
-) -> Result<Listing<'a, S, F, R>, ReaderError>
+) -> Result<FolderCursor<'a, S, F, R>, ReaderError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -309,26 +383,28 @@ where
         && found.base == prefix.len()
     {
         let subtree = found.reference;
-        let cursor = Cursor::seek(store, &subtree, &[], None).await?;
-        return Ok(Listing {
+        let cursor = ScanCursor::seek(store, &subtree, &[], None).await?;
+        return Ok(FolderCursor {
             store,
             root: subtree,
             end: None,
             base: Bytes::copy_from_slice(prefix),
             dir_len: prefix.len(),
             done: false,
+            seek: None,
             cursor,
         });
     }
     let end = successor(prefix);
-    let cursor = Cursor::seek(store, root, prefix, end.clone()).await?;
-    Ok(Listing {
+    let cursor = ScanCursor::seek(store, root, prefix, end.clone()).await?;
+    Ok(FolderCursor {
         store,
         root: root.clone(),
         end,
         base: Bytes::new(),
         dir_len: prefix.len(),
         done: false,
+        seek: None,
         cursor,
     })
 }
@@ -384,7 +460,7 @@ mod tests {
     }
 
     /// Drain a listing into its entries.
-    fn entries(mut listing: Listing<'_, &ContentGet<MemoryStore>>) -> Vec<DirEntry> {
+    fn entries(mut listing: FolderCursor<'_, &ContentGet<MemoryStore>>) -> Vec<DirEntry> {
         let mut out = Vec::new();
         while let Some(item) = run(listing.next()).unwrap() {
             out.push(item);
@@ -565,7 +641,7 @@ mod tests {
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"a.html"[..]))).unwrap(),
-            Served::Exact {
+            FolderServed::Exact {
                 key: Key::from(&b"a.html"[..]),
                 entry: entry(0x01),
             }
@@ -591,7 +667,7 @@ mod tests {
         // The root path resolves to the top-level index document.
         assert_eq!(
             run(reader.serve(&root, &Key::empty())).unwrap(),
-            Served::Index {
+            FolderServed::Index {
                 key: Key::from(&b"index.html"[..]),
                 entry: entry(0x01),
             }
@@ -599,7 +675,7 @@ mod tests {
         // A directory path (trailing separator) resolves to its index document.
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"docs/"[..]))).unwrap(),
-            Served::Index {
+            FolderServed::Index {
                 key: Key::from(&b"docs/index.html"[..]),
                 entry: entry(0x02),
             }
@@ -607,7 +683,7 @@ mod tests {
         // A directory path without a trailing separator is read as one too.
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"docs"[..]))).unwrap(),
-            Served::Index {
+            FolderServed::Index {
                 key: Key::from(&b"docs/index.html"[..]),
                 entry: entry(0x02),
             }
@@ -627,7 +703,7 @@ mod tests {
 
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"missing"[..]))).unwrap(),
-            Served::Error {
+            FolderServed::Error {
                 key: Key::from(&b"404.html"[..]),
                 entry: entry(0x09),
             }
@@ -641,7 +717,7 @@ mod tests {
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"nope"[..]))).unwrap(),
-            Served::Missing
+            FolderServed::Missing
         );
     }
 
@@ -702,7 +778,7 @@ mod tests {
         }
     }
 
-    fn entries_counting(mut listing: Listing<'_, &CountingStore>) -> Vec<DirEntry> {
+    fn entries_counting(mut listing: FolderCursor<'_, &CountingStore>) -> Vec<DirEntry> {
         let mut out = Vec::new();
         while let Some(item) = run(listing.next()).unwrap() {
             out.push(item);

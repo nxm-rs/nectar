@@ -299,7 +299,7 @@ fn narrow_after(after: Option<&[u8]>, edge: &[u8]) -> Option<Option<Vec<u8>>> {
 /// strictly after an optional bound, up to an optional limit; the resume
 /// token for the next page is the last yielded path. Configure before the
 /// first poll; configuration set later is ignored.
-pub struct Cursor<L> {
+pub struct TrieListing<L> {
     store: L,
     root: EntryRef,
     window: Window,
@@ -309,8 +309,8 @@ pub struct Cursor<L> {
     walk: Option<TrieWalk<L>>,
 }
 
-impl<L> Cursor<L> {
-    /// Cursor over the whole trie rooted at `root`, with the default window.
+impl<L> TrieListing<L> {
+    /// TrieListing over the whole trie rooted at `root`, with the default window.
     pub fn new(store: L, root: impl Into<EntryRef>) -> Self {
         Self {
             store,
@@ -358,7 +358,7 @@ impl<L> Cursor<L> {
     }
 }
 
-impl<L> Cursor<L>
+impl<L> TrieListing<L>
 where
     L: NodeLoader<Vec<u8>> + Clone + 'static,
 {
@@ -410,7 +410,7 @@ where
     }
 }
 
-impl<L> Stream for Cursor<L>
+impl<L> Stream for TrieListing<L>
 where
     L: NodeLoader<Vec<u8>> + Clone + Unpin + 'static,
 {
@@ -421,9 +421,9 @@ where
     }
 }
 
-impl<L> core::fmt::Debug for Cursor<L> {
+impl<L> core::fmt::Debug for TrieListing<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Cursor")
+        f.debug_struct("TrieListing")
             .field("root", &self.root)
             .field("window", &self.window)
             .field("remaining", &self.remaining)
@@ -440,7 +440,7 @@ impl<L> core::fmt::Debug for Cursor<L> {
 /// and shared subtrees repeat, matching the serial walk. Delivery order is
 /// fixed by the trie, not the window. Configure before the first poll;
 /// configuration set later is ignored.
-pub struct AddressStream<L> {
+pub struct TrieAddressStream<L> {
     store: L,
     root: EntryRef,
     window: Window,
@@ -448,7 +448,7 @@ pub struct AddressStream<L> {
     walk: Option<TrieWalk<L>>,
 }
 
-impl<L> AddressStream<L> {
+impl<L> TrieAddressStream<L> {
     /// Stream over the whole trie rooted at `root`, with the default window.
     pub fn new(store: L, root: impl Into<EntryRef>) -> Self {
         Self {
@@ -474,7 +474,7 @@ impl<L> AddressStream<L> {
     }
 }
 
-impl<L> AddressStream<L>
+impl<L> TrieAddressStream<L>
 where
     L: NodeLoader<Vec<u8>> + Clone + 'static,
 {
@@ -521,7 +521,7 @@ where
     }
 }
 
-impl<L> Stream for AddressStream<L>
+impl<L> Stream for TrieAddressStream<L>
 where
     L: NodeLoader<Vec<u8>> + Clone + Unpin + 'static,
 {
@@ -532,9 +532,9 @@ where
     }
 }
 
-impl<L> core::fmt::Debug for AddressStream<L> {
+impl<L> core::fmt::Debug for TrieAddressStream<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AddressStream")
+        f.debug_struct("TrieAddressStream")
             .field("root", &self.root)
             .field("window", &self.window)
             .finish_non_exhaustive()
@@ -616,7 +616,7 @@ mod tests {
             .collect()
     }
 
-    fn collect_entries<L>(mut cursor: Cursor<L>) -> Vec<Entry>
+    fn collect_entries<L>(mut cursor: TrieListing<L>) -> Vec<Entry>
     where
         L: NodeLoader<Vec<u8>> + Clone + 'static,
     {
@@ -629,7 +629,7 @@ mod tests {
         })
     }
 
-    fn collect_until_err<L>(mut cursor: Cursor<L>) -> (Vec<Entry>, Option<CursorError>)
+    fn collect_until_err<L>(mut cursor: TrieListing<L>) -> (Vec<Entry>, Option<CursorError>)
     where
         L: NodeLoader<Vec<u8>> + Clone + 'static,
     {
@@ -645,7 +645,7 @@ mod tests {
         })
     }
 
-    fn collect_addresses<L>(mut stream: AddressStream<L>) -> Vec<ChunkAddress>
+    fn collect_addresses<L>(mut stream: TrieAddressStream<L>) -> Vec<ChunkAddress>
     where
         L: NodeLoader<Vec<u8>> + Clone + 'static,
     {
@@ -757,8 +757,8 @@ mod tests {
     /// cumulative fetch count at each yielded entry.
     fn serial_profile(root: ChunkAddress, store: &LoadSaver) -> (Vec<ChunkAddress>, Vec<usize>) {
         let rec = RecordingStore::new(store.clone());
-        let mut cursor: Cursor<RecordingStore> =
-            Cursor::new(rec.clone(), root).with_window(window(1));
+        let mut cursor: TrieListing<RecordingStore> =
+            TrieListing::new(rec.clone(), root).with_window(window(1));
         let mut counts = Vec::new();
         run(async {
             while let Some(item) = cursor.next().await {
@@ -773,7 +773,7 @@ mod tests {
     fn listing_yields_every_path_in_path_order() {
         for paths in corpora() {
             let (root, loadsaver) = build(&paths);
-            let got = collect_entries(Cursor::new(loadsaver, root));
+            let got = collect_entries(TrieListing::new(loadsaver, root));
             let mut want = paths.clone();
             want.sort_unstable();
             assert_eq!(got.len(), want.len(), "corpus {paths:?}");
@@ -800,7 +800,7 @@ mod tests {
         editor.set_index_document("index.html");
         let (root, loadsaver) = run(editor.commit()).unwrap();
 
-        let got = collect_entries(Cursor::new(loadsaver, root));
+        let got = collect_entries(TrieListing::new(loadsaver, root));
         assert_eq!(got.len(), 3);
         let plain = got.iter().find(|e| e.path() == b"plain.txt").unwrap();
         assert_eq!(
@@ -828,7 +828,7 @@ mod tests {
         }
         let (root, loadsaver) = run(editor.commit()).unwrap();
 
-        let got = collect_entries(Cursor::new(loadsaver, root));
+        let got = collect_entries(TrieListing::new(loadsaver, root));
         let mut want = paths.to_vec();
         want.sort_unstable();
         assert_eq!(got.len(), want.len());
@@ -848,7 +848,7 @@ mod tests {
     fn prefix_narrows_the_listing() {
         for paths in corpora() {
             let (root, loadsaver) = build(&paths);
-            let full = collect_entries(Cursor::new(loadsaver.clone(), root));
+            let full = collect_entries(TrieListing::new(loadsaver.clone(), root));
             let mut probes = vec![String::new(), "zzz-absent".to_string()];
             for p in &paths {
                 probes.push((*p).to_string());
@@ -864,7 +864,8 @@ mod tests {
                     .filter(|e| e.path().starts_with(probe.as_bytes()))
                     .cloned()
                     .collect();
-                let got = collect_entries(Cursor::new(loadsaver.clone(), root).with_prefix(&probe));
+                let got =
+                    collect_entries(TrieListing::new(loadsaver.clone(), root).with_prefix(&probe));
                 assert_eq!(got, want, "prefix {probe:?} over {paths:?}");
             }
         }
@@ -874,11 +875,11 @@ mod tests {
     fn resume_after_continues_where_the_page_ended() {
         for paths in corpora() {
             let (root, loadsaver) = build(&paths);
-            let full = collect_entries(Cursor::new(loadsaver.clone(), root));
+            let full = collect_entries(TrieListing::new(loadsaver.clone(), root));
             for k in 0..full.len() {
-                let page = collect_entries(Cursor::new(loadsaver.clone(), root).with_limit(k));
+                let page = collect_entries(TrieListing::new(loadsaver.clone(), root).with_limit(k));
                 assert_eq!(page.as_slice(), &full[..k]);
-                let mut resumed = Cursor::new(loadsaver.clone(), root);
+                let mut resumed = TrieListing::new(loadsaver.clone(), root);
                 if let Some(last) = page.last() {
                     resumed = resumed.after(last.path());
                 }
@@ -894,7 +895,7 @@ mod tests {
     fn resume_tokens_need_not_be_stored_paths() {
         for paths in corpora() {
             let (root, loadsaver) = build(&paths);
-            let full = collect_entries(Cursor::new(loadsaver.clone(), root));
+            let full = collect_entries(TrieListing::new(loadsaver.clone(), root));
             let mut tokens = vec![String::new(), "zzz-absent".to_string()];
             for p in &paths {
                 tokens.push(format!("{p}0"));
@@ -908,7 +909,7 @@ mod tests {
                     .filter(|e| e.path() > token.as_bytes())
                     .cloned()
                     .collect();
-                let got = collect_entries(Cursor::new(loadsaver.clone(), root).after(&token));
+                let got = collect_entries(TrieListing::new(loadsaver.clone(), root).after(&token));
                 assert_eq!(got, want, "token {token:?} over {paths:?}");
             }
         }
@@ -924,14 +925,14 @@ mod tests {
             "robots.txt",
         ];
         let (root, loadsaver) = build(&paths);
-        let full = collect_entries(Cursor::new(loadsaver.clone(), root));
+        let full = collect_entries(TrieListing::new(loadsaver.clone(), root));
         let want: Vec<Entry> = full
             .iter()
             .filter(|e| e.path().starts_with(b"img/") && e.path() > b"img/1.png".as_slice())
             .cloned()
             .collect();
         let got = collect_entries(
-            Cursor::new(loadsaver, root)
+            TrieListing::new(loadsaver, root)
                 .with_prefix("img/")
                 .after("img/1.png"),
         );
@@ -943,7 +944,7 @@ mod tests {
     fn zero_limit_lists_nothing_and_fetches_nothing() {
         let (root, loadsaver) = build(&["a", "b"]);
         let rec = RecordingStore::new(loadsaver);
-        let got = collect_entries(Cursor::new(rec.clone(), root).with_limit(0));
+        let got = collect_entries(TrieListing::new(rec.clone(), root).with_limit(0));
         assert!(got.is_empty());
         assert_eq!(rec.fetch_count(), 0);
     }
@@ -959,7 +960,7 @@ mod tests {
                 for k in 1..=counts.len() {
                     let rec = RecordingStore::new(loadsaver.clone());
                     let page = collect_entries(
-                        Cursor::new(rec.clone(), root)
+                        TrieListing::new(rec.clone(), root)
                             .with_window(window(w))
                             .with_limit(k),
                     );
@@ -977,7 +978,8 @@ mod tests {
                     );
                 }
                 let rec = RecordingStore::new(loadsaver.clone());
-                let full = collect_entries(Cursor::new(rec.clone(), root).with_window(window(w)));
+                let full =
+                    collect_entries(TrieListing::new(rec.clone(), root).with_window(window(w)));
                 assert_eq!(full.len(), counts.len());
                 let mut got = rec.fetched();
                 got.sort();
@@ -995,7 +997,7 @@ mod tests {
         let (root, loadsaver) = build(&refs);
         for w in [1u16, 4, 8] {
             let rec = RecordingStore::delayed(loadsaver.clone());
-            let got = collect_entries(Cursor::new(rec.clone(), root).with_window(window(w)));
+            let got = collect_entries(TrieListing::new(rec.clone(), root).with_window(window(w)));
             assert_eq!(got.len(), paths.len());
             let peak = rec.peak();
             assert!(peak <= usize::from(w), "peak {peak} exceeds window {w}");
@@ -1020,7 +1022,7 @@ mod tests {
         for victim_pos in [0, serial_seq.len() / 2, serial_seq.len() - 1] {
             let victim = serial_seq[victim_pos];
             let (want_entries, want_err) = collect_until_err(
-                Cursor::new(RecordingStore::failing(loadsaver.clone(), victim), root)
+                TrieListing::new(RecordingStore::failing(loadsaver.clone(), victim), root)
                     .with_window(window(1)),
             );
             assert!(
@@ -1028,7 +1030,7 @@ mod tests {
             );
             for w in [2u16, 16] {
                 let (entries, err) = collect_until_err(
-                    Cursor::new(RecordingStore::failing(loadsaver.clone(), victim), root)
+                    TrieListing::new(RecordingStore::failing(loadsaver.clone(), victim), root)
                         .with_window(window(w)),
                 );
                 assert_eq!(entries, want_entries, "victim {victim_pos} window {w}");
@@ -1039,7 +1041,7 @@ mod tests {
             // A limit that stops before the failing node never sees the
             // error, even when the lookahead already fetched it.
             let (entries, err) = collect_until_err(
-                Cursor::new(RecordingStore::failing(loadsaver.clone(), victim), root)
+                TrieListing::new(RecordingStore::failing(loadsaver.clone(), victim), root)
                     .with_window(window(16))
                     .with_limit(want_entries.len()),
             );
@@ -1058,8 +1060,8 @@ mod tests {
         // The first child: its two siblings are queued when it fails.
         let victim = serial_seq[1];
         assert_ne!(victim, root);
-        let mut cursor =
-            Cursor::new(RecordingStore::failing(loadsaver, victim), root).with_window(window(4));
+        let mut cursor = TrieListing::new(RecordingStore::failing(loadsaver, victim), root)
+            .with_window(window(4));
         run(async {
             assert!(matches!(
                 cursor.next().await,
@@ -1079,7 +1081,7 @@ mod tests {
         let (root, loadsaver) = build(&["a", "b", "c"]);
         let (serial_seq, _) = serial_profile(root, &loadsaver);
         let victim = serial_seq[1];
-        let mut stream = AddressStream::new(RecordingStore::failing(loadsaver, victim), root)
+        let mut stream = TrieAddressStream::new(RecordingStore::failing(loadsaver, victim), root)
             .with_window(window(4));
         run(async {
             // The root's own addresses precede the failing child.
@@ -1127,7 +1129,7 @@ mod tests {
         let sealed: Chunk = Chunk::from_envelope(root_chunk.into()).unwrap();
         run(store.put(sealed)).unwrap();
 
-        let (entries, err) = collect_until_err(Cursor::new(LoadSaver::new(store), root));
+        let (entries, err) = collect_until_err(TrieListing::new(LoadSaver::new(store), root));
         assert!(entries.is_empty());
         assert!(matches!(err, Some(CursorError::Corrupt { address, .. }) if address == gaddr));
     }
@@ -1174,7 +1176,7 @@ mod tests {
                 with: other,
             },
         ));
-        let (entries, err) = collect_until_err(Cursor::new(lifted, root));
+        let (entries, err) = collect_until_err(TrieListing::new(lifted, root));
         assert!(entries.is_empty());
         let Some(CursorError::Store { address, source }) = err else {
             panic!("expected a store error, got {err:?}");
@@ -1194,9 +1196,9 @@ mod tests {
     fn address_stream_covers_nodes_and_entries() {
         for paths in corpora() {
             let (root, loadsaver) = build(&paths);
-            let ordered = collect_addresses(AddressStream::new(loadsaver.clone(), root));
+            let ordered = collect_addresses(TrieAddressStream::new(loadsaver.clone(), root));
             let windowed = collect_addresses(
-                AddressStream::new(loadsaver.clone(), root).with_window(window(8)),
+                TrieAddressStream::new(loadsaver.clone(), root).with_window(window(8)),
             );
             assert_eq!(
                 ordered, windowed,
@@ -1228,7 +1230,7 @@ mod tests {
 
         // Value entries ride the full encrypted width on the wire; the
         // stream carries their 32-byte addresses next to every node address.
-        let mut got = collect_addresses(AddressStream::new(loadsaver.clone(), root));
+        let mut got = collect_addresses(TrieAddressStream::new(loadsaver.clone(), root));
         got.sort();
         let mut want = stored_addresses(&loadsaver);
         want.extend(paths.iter().map(|p| make_addr(p)));
@@ -1240,9 +1242,9 @@ mod tests {
     fn empty_trie_lists_nothing_and_streams_only_the_root() {
         let editor: ManifestEditor<LoadSaver> = ManifestEditor::new(LoadSaver::new(Store::new()));
         let (root, loadsaver) = run(editor.commit()).unwrap();
-        assert!(collect_entries(Cursor::new(loadsaver.clone(), root)).is_empty());
+        assert!(collect_entries(TrieListing::new(loadsaver.clone(), root)).is_empty());
         assert_eq!(
-            collect_addresses(AddressStream::new(loadsaver, root)),
+            collect_addresses(TrieAddressStream::new(loadsaver, root)),
             vec![root]
         );
     }
@@ -1250,7 +1252,8 @@ mod tests {
     #[test]
     fn missing_root_is_a_store_error() {
         let root = make_addr("nowhere");
-        let (entries, err) = collect_until_err(Cursor::new(LoadSaver::new(Store::new()), root));
+        let (entries, err) =
+            collect_until_err(TrieListing::new(LoadSaver::new(Store::new()), root));
         assert!(entries.is_empty());
         assert!(matches!(err, Some(CursorError::Store { address, .. }) if address == root));
     }
@@ -1259,10 +1262,10 @@ mod tests {
     fn cursor_and_address_stream_drive_as_streams() {
         use futures_util::StreamExt;
         let (root, loadsaver) = build(&["a", "b", "c"]);
-        let entries: Vec<_> = run(Cursor::new(loadsaver.clone(), root).collect::<Vec<_>>());
+        let entries: Vec<_> = run(TrieListing::new(loadsaver.clone(), root).collect::<Vec<_>>());
         assert_eq!(entries.len(), 3);
         assert!(entries.iter().all(Result::is_ok));
-        let addresses: Vec<_> = run(AddressStream::new(loadsaver, root).collect::<Vec<_>>());
+        let addresses: Vec<_> = run(TrieAddressStream::new(loadsaver, root).collect::<Vec<_>>());
         assert!(addresses.len() > 3);
         assert!(addresses.iter().all(Result::is_ok));
     }

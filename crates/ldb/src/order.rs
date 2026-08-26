@@ -20,7 +20,7 @@ use crate::fork::{Child, ForkTable};
 use crate::format::Format;
 use crate::node::{NodeRef, RootExtension};
 use crate::reader::{Reader, ReaderError};
-use crate::scan::{Cursor, successor};
+use crate::scan::{ScanCursor, successor};
 use crate::store::{StoreError, open_chunk};
 use crate::value::{Entry, Key};
 
@@ -273,7 +273,7 @@ where
         hi: &Key,
         offset: u64,
         limit: usize,
-    ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
         let end = Some(Bytes::copy_from_slice(hi.as_bytes()));
         let start = self.rank(root, lo).await?.saturating_add(offset);
         self.page(root, start, end, limit).await
@@ -291,7 +291,7 @@ where
         prefix: &Key,
         offset: u64,
         limit: usize,
-    ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
         let end = successor(prefix.as_bytes());
         let start = self.rank(root, prefix).await?.saturating_add(offset);
         self.page(root, start, end, limit).await
@@ -306,10 +306,10 @@ where
         start: u64,
         end: Option<Bytes>,
         limit: usize,
-    ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
         match self.select(root, start).await? {
-            None => Ok(Cursor::exhausted(self.store())),
-            Some((key, _)) => Ok(Cursor::seek(self.store(), root, key.as_bytes(), end)
+            None => Ok(ScanCursor::exhausted(self.store())),
+            Some((key, _)) => Ok(ScanCursor::seek(self.store(), root, key.as_bytes(), end)
                 .await?
                 .with_limit(limit)),
         }

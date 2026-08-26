@@ -152,7 +152,7 @@ pub use error::{
     CustomKeyError, ForkPrefixEmpty, MetadataTooLong, NotAReference, PrefixTooLong, ValueTooLong,
     WeightOverBudget,
 };
-pub use folder::{DirEntry, Listing, Served, Website};
+pub use folder::{DirEntry, FolderCursor, FolderServed, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
 #[cfg(feature = "manifest")]
@@ -161,7 +161,7 @@ pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, NodeRef, RootExtension};
 pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};
 pub use reader::{Reader, ReaderError};
-pub use scan::Cursor;
+pub use scan::ScanCursor;
 pub use store::{NodeChunk, Plaintext, Seal, StoreError, load_node, save_node};
-pub use traverse::AddressStream;
+pub use traverse::ScanAddressStream;
 pub use value::{Entry, InlineValue, Key};

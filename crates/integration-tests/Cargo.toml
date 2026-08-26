@@ -26,6 +26,7 @@ disallowed_methods = "deny"
 [dev-dependencies]
 anyhow.workspace = true
 arbitrary.workspace = true
+futures-util.workspace = true
 alloy-primitives = { workspace = true, features = ["getrandom"] }
 bytes.workspace = true
 nectar-file = { workspace = true }

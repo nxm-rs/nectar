@@ -3,11 +3,12 @@
 //! Pinning, garbage collection, integrity checks and whole-collection push
 //! treat a database as a chunk set. Key iteration yields entry references
 //! only; the trie's own node chunks, and the segment chunks a spilled node
-//! reassembles from, never surface there. [`AddressStream`] yields that full
+//! reassembles from, never surface there. [`ScanAddressStream`] yields that full
 //! closure: every node chunk, every segment chunk and each entry's referenced
 //! address. An encrypted database walks the same way: each reference carries
 //! the key that opens the chunk it names.
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::future::poll_fn;
@@ -67,16 +68,17 @@ enum Advance<R: NodeRef> {
 /// window of at most [`Format::READ_AHEAD`] fetches in flight, so the walk
 /// retains O(depth) frames at the serial fetch count. Cancel-safe: all
 /// progress lives in `self`, and a step is consumed only once its fetch has
-/// completed, so a dropped [`next`](Self::next) future loses no addresses.
+/// completed, so a dropped stream loses no addresses.
 ///
 /// Every fault is non-terminal (a failed descent replays), so a fault rides
 /// the delivered turn rather than ending the walk. The walk advances inside
 /// `admit`, where the launch a fresh descent needs is reachable.
-#[derive(Debug)]
-pub struct AddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
+pub struct ScanAddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
-    /// The root reference, pending its visit.
-    root: Option<R>,
+    /// The root reference, replayed until its first visit lands.
+    root: R,
+    /// The root's own fetch, in place of the walk until it lands.
+    root_fetch: Option<BoxFuture<'a, Result<Visited<F, R>, ReaderError>>>,
     done: bool,
     /// Addresses discovered ahead of delivery: a visited node's own chunk
     /// and its segment chunks.
@@ -94,7 +96,7 @@ pub struct AddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     staged: Option<Turn>,
 }
 
-impl<'a, S, F, R> AddressStream<'a, S, F, R>
+impl<'a, S, F, R> ScanAddressStream<'a, S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -221,9 +223,11 @@ where
 
     /// A stream positioned before its root visit.
     fn start(store: &'a S, root: R) -> Self {
+        let launch = Box::pin(Self::root_visit(store, root.clone()));
         Self {
             store,
-            root: Some(root),
+            root,
+            root_fetch: Some(launch),
             done: false,
             pending: VecDeque::new(),
             stack: Vec::new(),
@@ -236,20 +240,88 @@ where
 
     /// The next address in the closure, or `None` when the walk is done.
     pub async fn next(&mut self) -> Result<Option<ChunkAddress>, ReaderError> {
+        poll_fn(|cx| self.poll_step(cx)).await.transpose()
+    }
+
+    /// One poll of the walk: the root's fetch gates it, then the turns.
+    fn poll_step(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<ChunkAddress, ReaderError>>> {
+        // The root's own fetch gates the walk; a fault replays it.
+        if let Some(outcome) = self
+            .root_fetch
+            .as_mut()
+            .map(|fetch| fetch.as_mut().poll(cx))
+        {
+            match outcome {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok((steps, segments))) => {
+                    let address = *self.root.address();
+                    self.root_fetch = None;
+                    self.enter(address, segments, steps);
+                }
+                Poll::Ready(Err(error)) => {
+                    self.root_fetch =
+                        Some(Box::pin(Self::root_visit(self.store, self.root.clone())));
+                    return Poll::Ready(Some(Err(error)));
+                }
+            }
+        }
         if self.done {
-            return Ok(None);
+            return Poll::Ready(None);
         }
-        if let Some(root) = &self.root {
-            let address = *root.address();
-            let (node, segments) = materialize_traced::<S, F, R>(self.store, root).await?;
-            self.root = None;
-            self.enter(address, segments, flatten(&node, true));
+        match self.poll_turn(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(turn)) => Poll::Ready(Some(turn)),
         }
-        let Some(turn) = poll_fn(|cx| self.poll_turn(cx)).await else {
-            self.done = true;
-            return Ok(None);
-        };
-        turn.map(Some)
+    }
+}
+
+impl<'a, S, F, R> core::fmt::Debug for ScanAddressStream<'a, S, F, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+    R: NodeRef,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ScanAddressStream")
+            .field("root", &self.root)
+            .field("done", &self.done)
+            .field("root_fetch_in_flight", &self.root_fetch.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, S, F, R> Stream for ScanAddressStream<'a, S, F, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+    R: NodeRef + Unpin,
+{
+    /// The next address in the closure; `None` when the walk is done.
+    type Item = Result<ChunkAddress, ReaderError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().poll_step(cx)
+    }
+}
+
+impl<'a, S, F, R> ScanAddressStream<'a, S, F, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+    R: NodeRef,
+{
+    /// The root's own fetch: its node's steps with the visit flag set, and its
+    /// segment chunks.
+    async fn root_visit(store: &'a S, root: R) -> Result<Visited<F, R>, ReaderError> {
+        let (node, segments) = materialize_traced::<S, F, R>(store, &root).await?;
+        Ok((flatten(&node, true), segments))
     }
 }
 
@@ -262,8 +334,8 @@ where
     /// Every chunk address the database rooted at `root` depends on, in
     /// depth-first key order.
     #[must_use]
-    pub fn addresses(&self, root: &R) -> AddressStream<'_, S, F, R> {
-        AddressStream::start(self.store(), root.clone())
+    pub fn addresses(&self, root: &R) -> ScanAddressStream<'_, S, F, R> {
+        ScanAddressStream::start(self.store(), root.clone())
     }
 }
 
@@ -303,7 +375,7 @@ mod tests {
         Prefix::try_from(bytes).unwrap()
     }
 
-    fn drain<S>(mut stream: AddressStream<'_, S>) -> Vec<ChunkAddress>
+    fn drain<S>(mut stream: ScanAddressStream<'_, S>) -> Vec<ChunkAddress>
     where
         S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     {
@@ -686,7 +758,7 @@ mod tests {
 
         /// Drain an encrypted-database address stream.
         fn drain_encrypted<S>(
-            mut stream: AddressStream<'_, S, V1, EncryptedChunkRef>,
+            mut stream: ScanAddressStream<'_, S, V1, EncryptedChunkRef>,
         ) -> Vec<ChunkAddress>
         where
             S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
