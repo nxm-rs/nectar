@@ -42,7 +42,12 @@ nectar-mantaray = { path = "../mantaray", features = ["manifest"] }
 
 [features]
 default = [ "std" ]
-std = [ "futures-util/std", "nectar-primitives/std", "nectar-tasks/std", "thiserror/std" ]
+std = [
+	"futures-util/std",
+	"nectar-primitives/std",
+	"nectar-tasks/std",
+	"thiserror/std",
+]
 # A dev shape, not a capability: the seam holds no crypto, so this is not
 # `encryption` and must never be named as one.
 test-encryption = [
