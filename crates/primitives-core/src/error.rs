@@ -174,13 +174,11 @@ pub enum ChunkStoreError {
 
 /// Classification of a chunk-store seam error.
 ///
-/// Every error the [`ChunkGet`](nectar_primitives::store::ChunkGet) and
-/// [`ChunkPut`](nectar_primitives::store::ChunkPut) seams hand back answers
-/// whether an absence is definite, so a generic consumer can separate a miss
-/// from a failure the medium could not classify. Swarm has no wire presence
-/// verb, so a networked negative always arrives as an error: a definite
-/// absence is the medium's own not-found answer, and nothing else may be
-/// read as one.
+/// Every error the `ChunkGet` and `ChunkPut` seams hand back answers whether
+/// an absence is definite, so a generic consumer can separate a miss from a
+/// failure the medium could not classify. Swarm has no wire presence verb,
+/// so a networked negative always arrives as an error: a definite absence is
+/// the medium's own not-found answer, and nothing else may be read as one.
 pub trait StoreError:
     core::error::Error + nectar_marker::MaybeSend + nectar_marker::MaybeSync + 'static
 {
