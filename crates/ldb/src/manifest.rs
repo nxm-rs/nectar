@@ -14,9 +14,9 @@ use nectar_manifest::{
     ManifestPath, ManifestView, MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem,
     Served, SinkError, SiteConfig, serve_fallback,
 };
-use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
+use nectar_primitives::{Chunk, EntryRef};
 
 use crate::apply::ApplyError;
 use crate::builder::Builder;
@@ -47,7 +47,7 @@ nectar_manifest::format_error_from!(LdbFormatError: ReaderError, ApplyError);
 /// The database as a [`Manifest`], keyed by path.
 impl<S, K, R> Manifest<R> for Database<S, K, V1>
 where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + Clone + MaybeSend + MaybeSync + 'static,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + Clone + MaybeSend + MaybeSync + 'static,
     K: Seal<R> + MaybeSend + MaybeSync,
     R: NodeRef,
 {
@@ -142,7 +142,7 @@ where
 /// The seam's write half, sealing through the database's own secret.
 impl<S, K, F, R> NodeSaver<Node<F, R>, R> for Database<S, K, F>
 where
-    S: ChunkPut + MaybeSend + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSend + MaybeSync,
     K: Seal<R> + MaybeSend + MaybeSync,
     F: Format,
     R: NodeRef,

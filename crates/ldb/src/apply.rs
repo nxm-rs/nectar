@@ -31,8 +31,8 @@ use core::task::Poll;
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::{Admission, Window};
-use nectar_primitives::ContentOnlyChunkSet;
 use nectar_primitives::store::{ChunkPut, MaybeSync, TrustedGet};
+use nectar_primitives::{Chunk, ContentOnlyChunkSet};
 use nectar_tasks::BoxFuture;
 
 use crate::bounded::Prefix;
@@ -209,7 +209,7 @@ pub async fn apply<S, F, R, K>(
     changeset: &Changeset<F>,
 ) -> Result<R, ApplyError>
 where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -297,7 +297,7 @@ async fn apply_forks<'c, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<ForkTable<F, R>, ApplyError>
 where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -405,7 +405,7 @@ async fn reconcile<'c, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -461,7 +461,7 @@ async fn descend<'c, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -607,7 +607,7 @@ async fn assemble<S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -643,7 +643,7 @@ async fn split<'c, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -723,7 +723,7 @@ async fn finish<S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -770,7 +770,7 @@ async fn compact<S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -857,7 +857,7 @@ async fn chain<S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -1437,8 +1437,8 @@ mod tests {
         }
     }
 
-    impl ChunkPut for GatedStore {
-        type Error = <ContentGet<MemoryStore> as ChunkPut>::Error;
+    impl ChunkPut<Chunk> for GatedStore {
+        type Error = <ContentGet<MemoryStore> as ChunkPut<Chunk>>::Error;
 
         async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Self::Error> {
             self.inner.put(chunk).await
@@ -1576,8 +1576,8 @@ mod tests {
         }
     }
 
-    impl ChunkPut for SkewedStore {
-        type Error = <ContentGet<MemoryStore> as ChunkPut>::Error;
+    impl ChunkPut<Chunk> for SkewedStore {
+        type Error = <ContentGet<MemoryStore> as ChunkPut<Chunk>>::Error;
 
         async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Self::Error> {
             self.inner.put(chunk).await

@@ -528,7 +528,7 @@ pub fn save_node<'a, S, F, R, K>(
     seal: &K,
 ) -> impl Future<Output = Result<R, StoreError>> + MaybeSend + 'a
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,

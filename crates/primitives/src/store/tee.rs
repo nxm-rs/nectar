@@ -120,7 +120,7 @@ mod tests {
         seen: parking_lot::Mutex<Vec<ChunkAddress>>,
     }
 
-    impl ChunkPut for RecordingSink {
+    impl ChunkPut<Sealed> for RecordingSink {
         type Error = Infallible;
 
         async fn put(&self, unit: Sealed) -> Result<(), Self::Error> {
@@ -146,7 +146,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct FailSink;
 
-    impl ChunkPut for FailSink {
+    impl ChunkPut<Sealed> for FailSink {
         type Error = LegRefused;
 
         async fn put(&self, _unit: Sealed) -> Result<(), Self::Error> {

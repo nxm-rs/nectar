@@ -67,8 +67,8 @@ impl ChunkGet<ContentOnlyChunkSet> for GatedStore {
 }
 
 /// Writes pass straight through: the gate measures reads alone.
-impl ChunkPut for GatedStore {
-    type Error = <Store as ChunkPut>::Error;
+impl ChunkPut<Chunk> for GatedStore {
+    type Error = <Store as ChunkPut<Chunk>>::Error;
 
     async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Self::Error> {
         self.inner.put(chunk).await
