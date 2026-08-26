@@ -11,12 +11,13 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use futures_util::StreamExt;
 use nectar_ldb::{
     Builder, Database, Entry, FolderServed, Key, Plaintext, Reader as LdbReader, V1, Website,
 };
 use nectar_manifest::{
-    Batch, ListEntry, Manifest, ManifestCursor, ManifestError, ManifestMeta, ManifestOp,
-    ManifestPath, ManifestView, MapEntry, MemSink, MetadataView, WellKnownKey,
+    Batch, ListEntry, Manifest, ManifestError, ManifestMeta, ManifestOp, ManifestPath,
+    ManifestView, MapEntry, MemSink, MetadataView, WellKnownKey,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EncryptedChunkRef, EncryptionKey};
@@ -167,7 +168,7 @@ where
     })
     .await;
     let view = manifest.at(stripped);
-    let first = view.iter().await.unwrap().next().await.unwrap();
+    let first = view.iter().await.unwrap().next().await.transpose().unwrap();
     assert!(first.is_none(), "the stripped manifest holds no path");
     let top = view.dir(&ManifestPath::default()).await.unwrap();
     assert!(top.entries().is_empty(), "and lists none");
@@ -471,7 +472,7 @@ async fn assert_empty_bootstrap<M: Manifest<ChunkRef>>(manifest: &M, native: Chu
     let empty: ChunkRef = manifest.empty().await.unwrap();
     assert_eq!(empty, native, "{f}: bootstrap off the native empty root");
     let view = manifest.at(empty);
-    let first = view.iter().await.unwrap().next().await.unwrap();
+    let first = view.iter().await.unwrap().next().await.transpose().unwrap();
     assert!(first.is_none(), "{f}: the empty manifest holds no path");
     let mut sink = MemSink::new();
     let missing = view.load(&p("missing.html"), &mut sink).await.err();
@@ -717,7 +718,7 @@ fn an_inline_entry_is_a_loadable_value_and_opaque_is_not() {
         };
         let mut kinds = Vec::new();
         let mut cursor = ManifestView::<ChunkRef>::iter(&view).await.unwrap();
-        while let Some((path, entry)) = cursor.next().await.unwrap() {
+        while let Some((path, entry)) = cursor.next().await.transpose().unwrap() {
             kinds.push((text(&path), entry.is_loadable()));
         }
         assert_eq!(kinds, expect([true, true, false]));

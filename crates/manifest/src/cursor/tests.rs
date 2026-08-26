@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 use core::convert::Infallible;
+use core::task::{Context, Poll};
 
+use futures_util::Stream;
+use futures_util::StreamExt;
 use nectar_primitives::chunk::ChunkRef;
 use nectar_testing::run;
 
@@ -9,16 +12,20 @@ use super::*;
 /// A scripted raw walk counting the keys it served.
 struct Script(Vec<Vec<u8>>, usize);
 
-impl RawCursor<ChunkRef> for Script {
-    type Error = Infallible;
+impl Stream for Script {
+    type Item = Result<RawItem<ChunkRef>, Infallible>;
 
-    async fn next(&mut self) -> Result<Option<RawItem<ChunkRef>>, Infallible> {
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.0.is_empty() {
-            return Ok(None);
+            return Poll::Ready(None);
         }
         self.1 += 1;
-        Ok(Some((self.0.remove(0), MapEntry::Opaque)))
+        Poll::Ready(Some(Ok((self.0.remove(0), MapEntry::Opaque))))
     }
+}
+
+impl RawCursor<ChunkRef> for Script {
+    type Error = Infallible;
 }
 
 fn keys(keys: &[&[u8]]) -> Vec<Vec<u8>> {
@@ -36,7 +43,7 @@ fn walk(script: &[&[u8]], bounds: (Bound<&str>, Bound<&str>)) -> (Vec<Vec<u8>>, 
     );
     let got = run(async {
         let mut out = Vec::new();
-        while let Some((path, _)) = ManifestCursor::<ChunkRef>::next(&mut cursor).await.unwrap() {
+        while let Some((path, _)) = cursor.next().await.transpose().unwrap() {
             out.push(path.into_bytes());
         }
         out

@@ -10,12 +10,19 @@
 //! root's typed metadata, so the conventions travel as registered metadata,
 //! never magic keys.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::fmt::Debug;
+use core::future::poll_fn;
 use core::mem::size_of;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use bytes::Bytes;
+use futures_util::Stream;
 use nectar_primitives::store::{MaybeSync, TrustedGet};
 use nectar_primitives::{ChunkRef, ContentOnlyChunkSet};
+use nectar_tasks::BoxFuture;
 
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, MetadataKey};
@@ -62,12 +69,15 @@ impl<F: Format> DirEntry<F> {
     }
 }
 
+/// The re-seek of a named subtree, in place of the walked cursor until it
+/// lands.
+type SeekFuture<'a, S, F, R> = BoxFuture<'a, Result<ScanCursor<'a, S, F, R>, ReaderError>>;
+
 /// A streaming listing of one directory's immediate children in key order.
 ///
 /// Deeper keys collapse at the next separator into one `Dir` entry, and the
 /// walk seeks past each named subtree rather than descending it, so a directory
 /// of any width or depth lists in O(depth) retained state and no value fetch.
-#[derive(Debug)]
 pub struct FolderCursor<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
     root: R,
@@ -82,54 +92,103 @@ pub struct FolderCursor<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     dir_len: usize,
     /// Set once a named subtree has no successor, so the walk stops.
     done: bool,
+    /// The re-seek of a named subtree, in place of `cursor` until it lands.
+    seek: Option<SeekFuture<'a, S, F, R>>,
     cursor: ScanCursor<'a, S, F, R>,
+}
+
+impl<S, F, R> Debug for FolderCursor<'_, S, F, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+    R: NodeRef,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FolderCursor")
+            .field("root", &self.root)
+            .field("end", &self.end)
+            .field("base", &self.base)
+            .field("done", &self.done)
+            .field("seek_in_flight", &self.seek.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S, F, R> FolderCursor<'_, S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
-    R: NodeRef,
+    R: NodeRef + Unpin,
 {
     /// The next immediate child of the directory in key order, or `None` at its
     /// end.
+    pub async fn next(&mut self) -> Result<Option<DirEntry<F>>, ReaderError> {
+        poll_fn(|cx| self.poll_step(cx)).await.transpose()
+    }
+
+    /// One poll of the listing walk.
     ///
     /// Naming a subdirectory reseeks the walk to the least key past that
     /// subtree, so the collapsed keys are never revisited and the value chunks
-    /// are never pulled.
-    pub async fn next(&mut self) -> Result<Option<DirEntry<F>>, ReaderError> {
+    /// are never pulled; the re-seek runs alongside the walk until it lands.
+    fn poll_step(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<DirEntry<F>, ReaderError>>> {
         loop {
-            if self.done {
-                return Ok(None);
-            }
-            let Some((key, entry)) = self.cursor.next().await? else {
-                return Ok(None);
-            };
-            let full = self.full_key(key);
-            let bytes = full.as_bytes();
-            let suffix = bytes.get(self.dir_len..).unwrap_or(&[]);
-            // The directory path itself is not one of its own children.
-            if suffix.is_empty() {
-                continue;
-            }
-            match suffix.iter().position(|&byte| byte == F::SEPARATOR) {
-                None => return Ok(Some(DirEntry::File { key: full, entry })),
-                Some(cut) => {
-                    let through = self.dir_len.saturating_add(cut).saturating_add(1);
-                    let dir = bytes.get(..through).unwrap_or(bytes);
-                    let dir_key = Key::from(dir);
-                    match successor(dir) {
-                        Some(start) => {
-                            // The cursor walks below `base`, so a reseek strips
-                            // the shared base the delegated subtree omits.
-                            let rel = start.get(self.base.len()..).unwrap_or(&[]);
-                            self.cursor =
-                                ScanCursor::seek(self.store, &self.root, rel, self.end.clone())
-                                    .await?;
-                        }
-                        None => self.done = true,
+            if let Some(outcome) = self.seek.as_mut().map(|seek| seek.as_mut().poll(cx)) {
+                match outcome {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok(cursor)) => {
+                        self.seek = None;
+                        self.cursor = cursor;
+                        continue;
                     }
-                    return Ok(Some(DirEntry::Dir { key: dir_key }));
+                    Poll::Ready(Err(error)) => return Poll::Ready(Some(Err(error))),
+                }
+            }
+            if self.done {
+                return Poll::Ready(None);
+            }
+            let step = {
+                let cursor = &mut self.cursor;
+                Pin::new(cursor).poll_next(cx)
+            };
+            match step {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
+                Poll::Ready(Some(Ok((key, entry)))) => {
+                    let full = self.full_key(key);
+                    let bytes = full.as_bytes();
+                    let suffix = bytes.get(self.dir_len..).unwrap_or(&[]);
+                    // The directory path itself is not one of its own children.
+                    if suffix.is_empty() {
+                        continue;
+                    }
+                    match suffix.iter().position(|&byte| byte == F::SEPARATOR) {
+                        None => return Poll::Ready(Some(Ok(DirEntry::File { key: full, entry }))),
+                        Some(cut) => {
+                            let through = self.dir_len.saturating_add(cut).saturating_add(1);
+                            let dir = bytes.get(..through).unwrap_or(bytes);
+                            let dir_key = Key::from(dir);
+                            match successor(dir) {
+                                Some(start) => {
+                                    // The cursor walks below `base`, so a reseek strips
+                                    // the shared base the delegated subtree omits.
+                                    let rel = start.get(self.base.len()..).unwrap_or(&[]).to_vec();
+                                    let store = self.store;
+                                    let root = self.root.clone();
+                                    let end = self.end.clone();
+                                    self.seek = Some(Box::pin(async move {
+                                        ScanCursor::seek(store, &root, rel.as_slice(), end).await
+                                    }));
+                                }
+                                None => self.done = true,
+                            }
+                            return Poll::Ready(Some(Ok(DirEntry::Dir { key: dir_key })));
+                        }
+                    }
                 }
             }
         }
@@ -146,6 +205,20 @@ where
         bytes.extend_from_slice(&self.base);
         bytes.extend_from_slice(key.as_bytes());
         Key::from(bytes)
+    }
+}
+
+impl<'a, S, F, R> Stream for FolderCursor<'a, S, F, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+    R: NodeRef + Unpin,
+{
+    /// One immediate child of the directory in key order; `None` at its end.
+    type Item = Result<DirEntry<F>, ReaderError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().poll_step(cx)
     }
 }
 
@@ -318,6 +391,7 @@ where
             base: Bytes::copy_from_slice(prefix),
             dir_len: prefix.len(),
             done: false,
+            seek: None,
             cursor,
         });
     }
@@ -330,6 +404,7 @@ where
         base: Bytes::new(),
         dir_len: prefix.len(),
         done: false,
+        seek: None,
         cursor,
     })
 }

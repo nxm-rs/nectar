@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 
+use futures_util::StreamExt;
 use nectar_primitives::chunk::{ChunkRef, Reference};
 
 use crate::path::ManifestPath;
@@ -132,7 +133,7 @@ where
 {
     let mut entries = Vec::new();
     let mut last_dir = None;
-    while let Some((path, entry)) = cursor.next().await? {
+    while let Some((path, entry)) = cursor.next().await.transpose()? {
         if !path.as_bytes().starts_with(prefix.as_bytes()) {
             break;
         }

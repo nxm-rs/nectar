@@ -11,6 +11,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
+use futures_util::StreamExt;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::ChunkRef;
 use nectar_primitives::sink::DataSink;
@@ -24,7 +25,7 @@ use crate::meta::{ManifestMeta, MetadataSource};
 use crate::op::ManifestOp;
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
-use crate::view::{ManifestCursor, ManifestView, MapEntry};
+use crate::view::{ManifestView, MapEntry};
 use crate::{Manifest, SinkError};
 
 /// A sink write that failed behind the erased seam; the concrete error
@@ -229,7 +230,7 @@ where
     ) -> BoxFuture<'a, Result<(), ErasedManifestError>> {
         Box::pin(async move {
             let mut cursor = self.at(*root).iter().await.map_err(erase)?;
-            while let Some((path, entry)) = cursor.next().await.map_err(erase)? {
+            while let Some((path, entry)) = cursor.next().await.transpose().map_err(erase)? {
                 if visit.visit(path, entry).is_break() {
                     return Ok(());
                 }

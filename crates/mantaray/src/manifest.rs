@@ -15,7 +15,10 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use core::future::Future;
 use core::ops::Bound;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
+use futures_util::Stream;
 use nectar_file::{Policy, load_reference};
 use nectar_manifest::{
     Batch, DataSink, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, ManifestView,
@@ -113,9 +116,9 @@ where
 
 impl<L, S, R, const B: usize> Manifest<R> for MantarayManifest<L, S, B>
 where
-    L: NodeLoader<Vec<u8>> + NodeSaver<[u8], R> + Clone + 'static,
+    L: NodeLoader<Vec<u8>> + NodeSaver<[u8], R> + Clone + Unpin + 'static,
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
-    R: Reference,
+    R: Reference + Unpin,
 {
     /// The trie's metadata: a string map, stored verbatim on the fork record.
     type Metadata = BTreeMap<String, String>;
@@ -203,7 +206,7 @@ pub struct TrieView<L, S, R: Reference, const B: usize = DEFAULT_BODY_SIZE> {
 impl<L, S, R, const B: usize> TrieView<L, S, R, B>
 where
     L: NodeLoader<Vec<u8>> + Clone,
-    R: Reference,
+    R: Reference + Unpin,
 {
     /// The entry at `path`, which is the trie key verbatim. The structural
     /// root and the site-config node read as absent.
@@ -242,15 +245,15 @@ where
 
 impl<L, S, R, const B: usize> ManifestView<R> for TrieView<L, S, R, B>
 where
-    L: NodeLoader<Vec<u8>> + Clone + 'static,
+    L: NodeLoader<Vec<u8>> + Clone + Unpin + 'static,
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
-    R: Reference,
+    R: Reference + Unpin,
 {
     type Metadata = BTreeMap<String, String>;
 
     type Error = ManifestError<TrieFormatError>;
 
-    type Cursor = PathCursor<TrieCursor<L, R>>;
+    type Cursor = PathCursor<TrieCursor<L, R>, R>;
 
     fn get(
         &self,
@@ -347,21 +350,28 @@ pub struct TrieCursor<L, R: Reference> {
 
 impl<L, R> RawCursor<R> for TrieCursor<L, R>
 where
-    L: NodeLoader<Vec<u8>> + Clone + MaybeSend + 'static,
-    R: Reference,
+    L: NodeLoader<Vec<u8>> + Clone + MaybeSend + Unpin + 'static,
+    R: Reference + Unpin,
 {
     type Error = ManifestError<TrieFormatError>;
+}
 
-    fn next(
-        &mut self,
-    ) -> impl Future<Output = Result<Option<RawItem<R>>, Self::Error>> + MaybeSend {
-        let cursor = &mut self.cursor;
-        async move {
-            Ok(cursor
-                .next()
-                .await
-                .transpose()?
-                .map(|entry| (entry.path().to_vec(), seam_entry(&entry))))
+impl<L, R> Stream for TrieCursor<L, R>
+where
+    L: NodeLoader<Vec<u8>> + Clone + MaybeSend + Unpin + 'static,
+    R: Reference + Unpin,
+{
+    type Item = Result<RawItem<R>, ManifestError<TrieFormatError>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.cursor).poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Ok(entry))) => {
+                Poll::Ready(Some(Ok((entry.path().to_vec(), seam_entry(&entry)))))
+            }
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error.into()))),
         }
     }
 }

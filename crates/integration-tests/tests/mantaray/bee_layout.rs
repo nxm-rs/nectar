@@ -17,7 +17,8 @@
 
 use std::sync::Arc;
 
-use nectar_manifest::{Batch, Manifest, ManifestCursor, ManifestPath, ManifestView};
+use futures_util::StreamExt;
+use nectar_manifest::{Batch, Manifest, ManifestPath, ManifestView};
 use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver, Reader, metadata};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
@@ -123,7 +124,7 @@ fn a_website_manifest_matches_the_reference_layout() {
         let view = trie.at(root);
         let mut walked = Vec::new();
         let mut cursor = view.iter().await.unwrap();
-        while let Some((path, _)) = cursor.next().await.unwrap() {
+        while let Some((path, _)) = cursor.next().await.transpose().unwrap() {
             walked.push(text(&path));
         }
         assert_eq!(

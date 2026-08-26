@@ -76,6 +76,10 @@ type Fetched<F, R> = Completion<Vec<Step<F, R>>>;
 /// a non-terminal fault.
 type Turn<F> = Result<Option<(Key, Entry<F>)>, ReaderError>;
 
+/// One polled step of a bounded walk: the emitted pair, the end of the walk,
+/// or a non-terminal fault.
+type StepOutcome<F> = Poll<Option<Result<(Key, Entry<F>), ReaderError>>>;
+
 /// An ordered cursor over a manifest, yielding `(key, value)` in key order.
 ///
 /// The cursor fetches trie nodes on demand and retains one frame per referenced
@@ -89,8 +93,12 @@ type Turn<F> = Result<Option<(Key, Entry<F>)>, ReaderError>;
 /// walk fetches exactly the nodes a serial walk would and returns them in the
 /// same order.
 ///
+/// Fetches the trie nodes on the frontier only; the value chunk a reference
+/// names is never pulled, so listing a manifest costs node fetches, not one
+/// fetch per key.
+///
 /// Cancel-safe: a descent's step is consumed only after its fetch completes,
-/// so a dropped [`next`](Self::next) future replays the same descent.
+/// so a dropped stream replays the same descent.
 ///
 /// Every fault is non-terminal (a failed descent replays), so a fault rides
 /// the delivered turn rather than ending the walk. The walk advances inside
@@ -355,35 +363,48 @@ where
     }
 
     /// The next `(key, value)` in key order, or `None` at the end of the walk.
-    ///
-    /// Fetches the trie nodes on the frontier only; the value chunk a reference
-    /// names is never pulled, so listing a manifest costs node fetches, not one
-    /// fetch per key.
     pub async fn next(&mut self) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
-        if self.done {
-            return Ok(None);
-        }
-        if self.remaining == Some(0) {
+        poll_fn(|cx| self.poll_step(cx)).await.transpose()
+    }
+
+    /// One step of the walk; a delivered fault rides the turn and the walk
+    /// continues.
+    fn poll_step(&mut self, cx: &mut Context<'_>) -> StepOutcome<F> {
+        if self.done || self.remaining == Some(0) {
             self.done = true;
-            return Ok(None);
+            return Poll::Ready(None);
         }
-        let Some(turn) = poll_fn(|cx| self.poll_turn(cx)).await else {
-            self.done = true;
-            return Ok(None);
-        };
-        match turn {
-            Ok(Some((key, entry))) => {
+        match self.poll_turn(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(Ok(Some((key, entry))))) => {
                 if let Some(left) = self.remaining {
                     self.remaining = Some(left.saturating_sub(1));
                 }
-                Ok(Some((key, entry)))
+                Poll::Ready(Some(Ok((key, entry))))
             }
-            Ok(None) => {
+            Poll::Ready(Some(Ok(None))) => {
                 self.done = true;
-                Ok(None)
+                Poll::Ready(None)
             }
-            Err(error) => Err(error),
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
         }
+    }
+}
+
+impl<'a, S, F, R> Stream for ScanCursor<'a, S, F, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+    R: NodeRef + Unpin,
+{
+    type Item = Result<(Key, Entry<F>), ReaderError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().poll_step(cx)
     }
 }
 

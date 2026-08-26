@@ -4,11 +4,11 @@
 use std::ops::Bound;
 use std::sync::Arc;
 
+use futures_util::StreamExt;
+
 use nectar_file::{DataSink, File, MemSink, Policy};
 use nectar_ldb::Database;
-use nectar_manifest::{
-    Batch, Manifest, ManifestCursor, ManifestError, ManifestPath, ManifestView, MapEntry,
-};
+use nectar_manifest::{Batch, Manifest, ManifestError, ManifestPath, ManifestView, MapEntry};
 use nectar_mantaray::{MantarayManifest, NodeLoadSaver};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
@@ -148,7 +148,7 @@ pub(crate) async fn drain<V: ManifestView<ChunkRef>>(
 ) -> Vec<String> {
     let mut out = Vec::new();
     let mut cursor = view.range(bounds).await.unwrap();
-    while let Some((path, _)) = cursor.next().await.unwrap() {
+    while let Some((path, _)) = cursor.next().await.transpose().unwrap() {
         out.push(text(&path));
     }
     out

@@ -3,6 +3,8 @@
 use core::future::Future;
 use core::ops::Bound;
 
+use futures_util::Stream;
+use futures_util::StreamExt;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::{ChunkRef, Reference};
@@ -55,16 +57,13 @@ impl<R: Reference> MapEntry<R> {
     }
 }
 
-/// An ordered walk over a view. Peak retained state is a function of depth,
-/// not of key count.
-pub trait ManifestCursor<R: Reference = ChunkRef>: MaybeSend {
+/// An ordered walk over a view, as a [`Stream`] of `(path, entry)` in path
+/// order. Peak retained state is a function of depth, not of key count.
+pub trait ManifestCursor<R: Reference = ChunkRef>:
+    MaybeSend + Unpin + Stream<Item = Result<(ManifestPath, MapEntry<R>), Self::Error>>
+{
     /// Error type a walk fails with.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
-
-    /// The next `(path, entry)` in path order.
-    fn next(
-        &mut self,
-    ) -> impl Future<Output = Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error>> + MaybeSend;
 }
 
 /// The read view of a manifest, bound to one immutable root.
@@ -161,7 +160,7 @@ pub trait ManifestView<R: Reference = ChunkRef>: MaybeSend + MaybeSync {
         async move {
             let mut cursor = walk.await?;
             let mut last = None;
-            while let Some(item) = cursor.next().await? {
+            while let Some(item) = cursor.next().await.transpose()? {
                 last = Some(item);
             }
             Ok(last)

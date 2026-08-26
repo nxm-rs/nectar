@@ -2563,6 +2563,7 @@ dependencies = [
  "anyhow",
  "arbitrary",
  "bytes",
+ "futures-util",
  "nectar-file",
  "nectar-ldb",
  "nectar-manifest",

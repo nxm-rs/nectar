@@ -19,9 +19,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use futures_util::StreamExt;
+
 use nectar_manifest::{
-    Batch, ErasedManifest, Manifest, ManifestCursor, ManifestOp, ManifestPath, ManifestView,
-    MetadataSource,
+    Batch, ErasedManifest, Manifest, ManifestOp, ManifestPath, ManifestView, MetadataSource,
 };
 use nectar_mantaray::{MantarayManifest, NodeLoadSaver, NodeLoader, NodeSaver};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EntryRef};
@@ -190,7 +191,8 @@ fn listing_one_level_costs_that_subtree_alone() {
 
         let mut cursor = view.iter().await.unwrap();
         let mut keys = 0;
-        while cursor.next().await.unwrap().is_some() {
+        while let Some(item) = cursor.next().await {
+            item.unwrap();
             keys += 1;
         }
         let whole = nodes.take();
