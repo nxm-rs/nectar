@@ -214,7 +214,7 @@ impl GatedStore {
     }
 }
 
-impl ChunkPut for GatedStore {
+impl ChunkPut<Chunk> for GatedStore {
     type Error = Infallible;
 
     async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Infallible> {

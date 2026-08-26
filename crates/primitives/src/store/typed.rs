@@ -8,6 +8,8 @@
 //! error is classified through [`StoreError`], so a generic consumer
 //! separates a definite miss from a failure. Trust is a property of the
 //! read medium, declared once per backend through [`ChunkGet::Trust`].
+//! Validation is a property of the put unit, declared once per unit through
+//! [`PutUnit::Validation`].
 
 use core::future::Future;
 
@@ -58,24 +60,47 @@ impl<R: ChunkRegistry, T: ChunkGet<R> + ?Sized> ChunkGet<R> for alloc::sync::Arc
     }
 }
 
+/// Validation a unit that a local or test store takes as-is carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoValidation;
+
 /// What a [`ChunkPut`] moves. Not sealed, so whether a unit wraps a verified
 /// chunk is a property of the chosen `U`, not of the trait.
 pub trait PutUnit: MaybeSend + 'static {
+    /// The validation the store applies to the unit. A local or test store
+    /// applies none. A unit the network accounts for carries its postage
+    /// stamp.
+    type Validation;
+
     /// The address the unit is stored under.
     fn address(&self) -> &ChunkAddress;
 }
 
 impl<R: ChunkRegistry> PutUnit for Chunk<Verified, R> {
+    type Validation = NoValidation;
+
     #[inline]
     fn address(&self) -> &ChunkAddress {
         Self::address(self)
     }
 }
 
+const _VALIDATION_IS_NONE: fn(
+    <Chunk<Verified, StandardChunkSet> as PutUnit>::Validation,
+) -> NoValidation = {
+    const fn unit(validation: NoValidation) -> NoValidation {
+        validation
+    }
+    unit
+};
+
 /// Async chunk storage (primary API, `&self`).
 ///
+/// There is no default put unit: the caller names the unit it stores, so an
+/// unstamped put is never the choice by default.
+///
 /// Implementors should use interior mutability (e.g. `Mutex`, `RwLock`).
-pub trait ChunkPut<U: PutUnit = Chunk<Verified>>: MaybeSend + MaybeSync {
+pub trait ChunkPut<U: PutUnit>: MaybeSend + MaybeSync {
     /// Error type for put operations.
     type Error: StoreError;
 

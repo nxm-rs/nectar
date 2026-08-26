@@ -10,7 +10,7 @@ use core::ops::RangeBounds;
 use bytes::Bytes;
 
 use nectar_primitives::store::{ChunkPut, MaybeSync, TrustedGet};
-use nectar_primitives::{ChunkRef, ContentOnlyChunkSet};
+use nectar_primitives::{Chunk, ChunkRef, ContentOnlyChunkSet};
 
 use crate::apply::{ApplyError, Changeset, apply};
 use crate::folder::{Listing, Served, Website, dir_at};
@@ -152,7 +152,7 @@ impl<S, F: Format> Database<S, Plaintext, F> {
 
 impl<S, K, F> Database<S, K, F>
 where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + MaybeSync,
     F: Format,
 {
     /// Insert one key, clearing any metadata bound at it.
@@ -389,7 +389,7 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
 
 impl<S, K, F, R> Editor<'_, S, K, F, R>
 where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut<Chunk> + MaybeSync,
     K: Seal<R>,
     F: Format,
     R: NodeRef,

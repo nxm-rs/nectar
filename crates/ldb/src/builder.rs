@@ -17,8 +17,8 @@ use core::marker::PhantomData;
 
 use bytes::Bytes;
 use nectar_governor::Window;
-use nectar_primitives::ChunkRef;
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
+use nectar_primitives::{Chunk, ChunkRef};
 use nectar_tasks::BoxFuture;
 
 use crate::bounded::{Prefix, SegmentWeight};
@@ -195,7 +195,7 @@ impl<F: Format> Builder<F> {
     /// returned reference covers a fully stored tree.
     pub async fn build<S, R, K>(&self, store: &S, seal: &K) -> Result<Built<R>, BuildError>
     where
-        S: ChunkPut + MaybeSync,
+        S: ChunkPut<Chunk> + MaybeSync,
         R: NodeRef,
         K: Seal<R>,
     {
@@ -231,14 +231,14 @@ pub(crate) fn put_window<F: Format>() -> Window {
 /// Puts are order-free, so the whole window admits; every put is settled
 /// before the root is returned. Wraps the shared governor put-sink, sealing
 /// chunks and mapping faults to [`BuildError`].
-pub(crate) struct PutSink<'s, S: ChunkPut + MaybeSync, R: NodeRef, K: Seal<R>> {
+pub(crate) struct PutSink<'s, S: ChunkPut<Chunk> + MaybeSync, R: NodeRef, K: Seal<R>> {
     store: &'s S,
     seal: &'s K,
     sink: nectar_governor::PutSink<BoxFuture<'s, Result<(), BuildError>>>,
     _reference: PhantomData<R>,
 }
 
-impl<'s, S: ChunkPut + MaybeSync, R: NodeRef, K: Seal<R>> PutSink<'s, S, R, K> {
+impl<'s, S: ChunkPut<Chunk> + MaybeSync, R: NodeRef, K: Seal<R>> PutSink<'s, S, R, K> {
     /// A window admitting `window` puts at once over `store`, sealing every
     /// chunk with `seal`.
     pub(crate) fn new(store: &'s S, seal: &'s K, window: Window) -> Self {
@@ -322,7 +322,7 @@ pub(crate) async fn build_table_in<'a, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<ForkTable<F, R>, BuildError>
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -558,7 +558,7 @@ pub(crate) async fn resolve_in<S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Resolved<F, R>, BuildError>
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -593,7 +593,7 @@ pub(crate) async fn emit_node_in<S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<R, BuildError>
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -612,7 +612,7 @@ async fn spill_node_in<S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<R, BuildError>
 where
-    S: ChunkPut + MaybeSync,
+    S: ChunkPut<Chunk> + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
