@@ -14,9 +14,8 @@
 //! - [`ChunkPut`](nectar_primitives::ChunkPut) over a [`StampedChunk`]: the
 //!   sink for a paid chunk, with [`StampIndifferent`] bridging a plain chunk
 //!   store into it
-//! - [`ChunkStore`](nectar_postage_primitives::ChunkStore): the synchronous
-//!   stamp-keyed store seam, with [`Lifted`](nectar_postage_primitives::Lifted)
-//!   lifting it onto the async seams
+//! - [`ChunkStore`]: the synchronous stamp-keyed store seam, with
+//!   [`Lifted`] lifting it onto the async seams
 //! - [`BatchEventHandler`]: Handle batch events from the blockchain (requires `std`)
 //!
 //! # Features

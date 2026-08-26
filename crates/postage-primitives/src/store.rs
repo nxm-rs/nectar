@@ -115,8 +115,7 @@ pub trait ChunkStore<const B: usize = DEFAULT_BODY_SIZE>:
     ///
     /// Storing again under a key replaces the entry. A store may turn down
     /// a re-stamp that is not strictly newer than the stored binding; the
-    /// classification is the store's own
-    /// [`Error`](Self::Error).
+    /// classification is the store's own error type.
     fn put(&self, unit: &StampedChunk<Verified, Unvalidated, B>) -> Result<(), Self::Error>;
 
     /// Read the entry stored under the exact key.
