@@ -22,7 +22,7 @@
 //! - [`PostageContext`]: Context for batch expiry calculations
 //! - [`StoreKey`]: The key of a stamped-store entry: address, batch, stamp hash
 //! - [`ChunkStore`]: The synchronous stamp-keyed store seam, composing the
-//!   stampless `SyncChunkGet` retrieval
+//!   stampless `ChunkGetSync` retrieval
 //! - [`Lifted`]: The adapter that lifts the synchronous seams onto the async seams
 //!
 //! # Features

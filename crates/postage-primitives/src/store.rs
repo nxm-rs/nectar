@@ -7,7 +7,7 @@
 //! an optional field beside it, so a stampless put is a type error.
 //!
 //! [`ChunkStore`] composes the postage-free synchronous retrieval seam
-//! `nectar_primitives::store::SyncChunkGet` for the stampless body read, so
+//! `nectar_primitives::store::ChunkGetSync` for the stampless body read, so
 //! one store answers both asks. A miss answers a classified absence
 //! through [`StoreError`] either way. Presence survives on this seam as
 //! the fallible [`contains`](ChunkStore::contains). [`Lifted`] lifts a
@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use alloy_primitives::B256;
 use nectar_primitives::marker::{MaybeSend, MaybeSync};
-use nectar_primitives::store::{ChunkGet, ChunkPut, SyncChunkGet};
+use nectar_primitives::store::{ChunkGet, ChunkGetSync, ChunkPut};
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, DEFAULT_BODY_SIZE, Verified};
 
 use crate::{BatchId, Stamp, StampedChunk, Unvalidated, ValidationState};
@@ -109,7 +109,7 @@ impl StoreKey {
 /// }
 /// ```
 pub trait ChunkStore<const B: usize = DEFAULT_BODY_SIZE>:
-    MaybeSend + MaybeSync + SyncChunkGet<AnyChunkSet<B>, Trust = Verified>
+    MaybeSend + MaybeSync + ChunkGetSync<AnyChunkSet<B>, Trust = Verified>
 {
     /// Store a stamped chunk under the key its own facts name.
     ///
@@ -234,7 +234,7 @@ impl<S> Lifted<S> {
     }
 }
 
-impl<S: SyncChunkGet<AnyChunkSet<DEFAULT_BODY_SIZE>>> ChunkGet<AnyChunkSet<DEFAULT_BODY_SIZE>>
+impl<S: ChunkGetSync<AnyChunkSet<DEFAULT_BODY_SIZE>>> ChunkGet<AnyChunkSet<DEFAULT_BODY_SIZE>>
     for Lifted<S>
 {
     type Trust = S::Trust;
@@ -291,7 +291,7 @@ mod tests {
         }
     }
 
-    impl SyncChunkGet<AnyChunkSet> for MemStore {
+    impl ChunkGetSync<AnyChunkSet> for MemStore {
         type Trust = Verified;
         type Error = ChunkStoreError;
 
@@ -359,7 +359,7 @@ mod tests {
         bodies: RwLock<BTreeMap<ChunkAddress, Chunk<Verified, AnyChunkSet>>>,
     }
 
-    impl SyncChunkGet<AnyChunkSet> for CacheStore {
+    impl ChunkGetSync<AnyChunkSet> for CacheStore {
         type Trust = Verified;
         type Error = ChunkStoreError;
 
@@ -499,7 +499,7 @@ mod tests {
     fn object_safe(_store: &dyn ChunkStore<Error = ChunkStoreError>) {}
 
     fn object_safe_retrieval(
-        _store: &dyn SyncChunkGet<AnyChunkSet, Trust = Verified, Error = ChunkStoreError>,
+        _store: &dyn ChunkGetSync<AnyChunkSet, Trust = Verified, Error = ChunkStoreError>,
     ) {
     }
 

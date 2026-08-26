@@ -3,7 +3,7 @@
 //! `ChunkGet` and `ChunkPut` are async and carry `MaybeSend`/`MaybeSync`
 //! bounds so a store may be `!Send` on single-threaded targets (wasm32, bare
 //! metal, or any target under the `unsync` feature). The synchronous seam
-//! [`SyncChunkGet`] answers the same stampless address read without a
+//! [`ChunkGetSync`] answers the same stampless address read without a
 //! future. The seam error is classified through `StoreError`, so a definite
 //! miss never reads as a failure and vice versa.
 
@@ -11,7 +11,6 @@ mod content;
 mod memory;
 #[cfg(feature = "std")]
 mod retry;
-mod sync;
 mod tee;
 mod typed;
 mod verify;
@@ -23,9 +22,8 @@ pub use memory::MemoryStore;
 pub use nectar_tasks::Sleeper;
 #[cfg(feature = "std")]
 pub use retry::{RetryConfig, RetryingChunkGet};
-pub use sync::SyncChunkGet;
 pub use tee::{Tee, TeeError};
-pub use typed::{ChunkGet, ChunkPut, PutUnit, TrustedGet};
+pub use typed::{ChunkGet, ChunkGetSync, ChunkPut, PutUnit, TrustedGet};
 pub use verify::{VerifyError, VerifyingStore};
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
