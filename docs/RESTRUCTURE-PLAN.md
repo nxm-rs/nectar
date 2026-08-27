@@ -136,7 +136,7 @@ Fold the shared sibling levels across a contiguous segment run, which turns the 
 | Crate | Contents |
 |---|---|
 | `nectar-errors` | The shared error types and the `StoreError` classification, so the api crates and the implementation crates do not depend on each other. |
-| `nectar-storage-api` | `ChunkStore` (synchronous, stamp-keyed, object-safe), `ChunkGet` and `ChunkPut` (asynchronous), `StoreKey`, `PutUnit`, `Source`, and the adapter that lifts a sync store onto the async seam. |
+| `nectar-storage-api` | `ChunkStore` (synchronous, stamp-keyed, object-safe), `ChunkGet` and `ChunkPut` (asynchronous), `StoreKey`, `PutUnit`, `Source`, the positional byte seam (`ReadAt` and `WriteAt`), and the adapter that lifts a sync store onto the async seam. |
 | `nectar-postage-api` | The rewritten stamp validator, the batch store seam, the issuer and stamper seams, and stamp-index arbitration. |
 | `nectar-manifest-api` | `Manifest`, `ManifestView`, and cursors expressed as `Stream`. |
 
@@ -165,7 +165,7 @@ It is std rather than `no_std`, because its proofs are verified on chain rather 
 Every other crate in this tier is std-only, and each deletes a `std` feature that was never honoured.
 `nectar-feeds` has no `no_std` attribute at all today.
 `nectar-mantaray` gates every functional module and even `extern crate alloc` behind `std`, so its bare-metal build exposes two constant tables, and its order-dependent roots keep it out of the proving lane permanently.
-`nectar-file` is unconditionally `no_std` today and loses it, because nothing in it is in the proving lane and its positional IO is a transfer concern.
+`nectar-file` is unconditionally `no_std` today and loses it, because nothing in it is in the proving lane and the positional seam it hosted settles beside the chunk store traits in `nectar-primitives::store`, which `nectar-file` re-exports for its consumers.
 
 ### Tier 4, facade
 
@@ -216,7 +216,7 @@ The largest milestone, and the one consumers key off.
 The carve runs as stacked cars in dependency order: move the sleeper into the tasks crate; rename the proving core and move the routing predicates down; carve the spec crate and invert the contracts dependency; carve the postage data crate; create the proof crate; create the errors and api crates; split the ldb core out and implement the proof there; create the facade.
 
 **The rename comes last, not first.**
-Both crates want the name `nectar-primitives` at once, and the old one does not dissolve until its store module leaves and its sink module is deleted.
+Both crates want the name `nectar-primitives` at once, and the old one does not dissolve until its store module leaves; its sink module is already deleted.
 Only that one step is red at a commit boundary; every other move is green if the shim discipline holds.
 
 The seams reach their final shape in the same milestone, because these crates are being written fresh.
@@ -226,7 +226,10 @@ A hard `Send` bound makes a seam unusable on wasm, and an unbounded future canno
 A seam whose operations wait on nothing stays synchronous: the batch store, the ingest handler and the issuance seam run inside a synchronous transaction, and their out-of-tree implementors bind the synchronous shape.
 The synchronous store seam lands keyed on the address, the batch and the stamp hash, because one address holds many stamps.
 The put unit gains a validation type.
-Positional IO adopts the standard traits, and the name `Sink` is reserved for types that implement the standard trait.
+Positional IO settles in-house beside the chunk store traits in `nectar-primitives::store`, which `nectar-file` re-exports, because stable `std` and tokio expose no positional I/O API of their own and there is no sanctioned substrate to adopt.
+The seam compiles `no_std` but carries no proving-lane promise; it rides its store module into `nectar-storage-api`.
+A load reports the bytes it wrote, and a bounded in-memory `collect` sits beside it on the manifest read view.
+The name `Sink` is reserved for types that implement the standard trait, and the bounded-submission windows are now expressed with it.
 The cursors become streams, which both formats already have the machinery for and hide.
 
 `fuzz/` is a separate workspace with its own lock file, so `cargo check --workspace` never covers it.
