@@ -32,6 +32,43 @@ pub enum ManifestError<F> {
     Format(F),
 }
 
+/// A failure to assemble an entry's data in memory under a byte bound.
+/// `F` is the error type a load on the view fails with.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum CollectError<F> {
+    /// The entry outran the bound.
+    ///
+    /// The refusal names the end of the first frame past the bound: the
+    /// entry's total size is not known up front, so that end is its size
+    /// witness.
+    #[error("the entry outruns the {max}-byte bound")]
+    TooLarge {
+        /// The end of the first frame past the bound, a lower bound on the
+        /// entry's size.
+        exceeds: u64,
+        /// The bound the caller set.
+        max: u64,
+    },
+    /// The load itself failed.
+    #[error(transparent)]
+    Load(F),
+}
+
+impl<F> CollectError<F> {
+    /// Whether the entry outran the bound: a larger bound answers.
+    #[must_use]
+    pub const fn is_too_large(&self) -> bool {
+        matches!(self, Self::TooLarge { .. })
+    }
+
+    /// Whether the load itself failed: whatever the bound, the outcome holds.
+    #[must_use]
+    pub const fn is_load_failure(&self) -> bool {
+        matches!(self, Self::Load(_))
+    }
+}
+
 /// The boxed format union an erased handle carries.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -135,5 +172,27 @@ mod tests {
         let boxed: BoxedError = Box::new(erased);
         let path = reserved_key(&*boxed).map(ReservedKey::path);
         assert_eq!(path, Some(&ManifestPath::from("/")));
+    }
+
+    /// New collect variants must be classified, so the match stays exhaustive;
+    /// the predicates stay mutually exclusive per variant.
+    #[test]
+    fn every_collect_variant_is_classified_into_exactly_one_group() {
+        let variants = [
+            CollectError::<Union>::TooLarge { exceeds: 1, max: 0 },
+            CollectError::Load(Union(reserved())),
+        ];
+        for error in &variants {
+            match error {
+                CollectError::TooLarge { .. } => {
+                    assert!(error.is_too_large(), "a refusal is too large");
+                    assert!(!error.is_load_failure(), "a refusal is not a load failure");
+                }
+                CollectError::Load(_) => {
+                    assert!(!error.is_too_large(), "a load failure is not a refusal");
+                    assert!(error.is_load_failure(), "a load failure is a load failure");
+                }
+            }
+        }
     }
 }

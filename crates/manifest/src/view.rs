@@ -1,5 +1,6 @@
 //! The read handle: one immutable root, the map verbs over it.
 
+use alloc::vec::Vec;
 use core::future::Future;
 use core::ops::Bound;
 
@@ -8,8 +9,9 @@ use futures_util::StreamExt;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::{ChunkRef, Reference};
-use nectar_primitives::store::WriteAt;
+use nectar_primitives::store::{BoxedError, WriteAt};
 
+use crate::error::CollectError;
 use crate::listing::{Listing, collapse_dir};
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
@@ -201,6 +203,30 @@ pub trait ManifestView<R: Reference = ChunkRef>: MaybeSend + MaybeSync {
         sink: &mut K,
     ) -> impl Future<Output = Result<u64, Self::Error>> + MaybeSend;
 
+    /// Assemble the data bound to `path` in memory, at most `max` bytes.
+    ///
+    /// The bound is checked per frame as the frames land, so the allocation
+    /// never passes it. A refusal names the end of the first frame past the
+    /// bound; the entry's total size is not known up front.
+    fn collect(
+        &self,
+        path: &ManifestPath,
+        max: u64,
+    ) -> impl Future<Output = Result<Vec<u8>, CollectError<Self::Error>>> + MaybeSend {
+        let path = path.clone();
+        async move {
+            let mut buffer = Capped::new(max);
+            let written = self.load(&path, &mut buffer).await;
+            if let Some((exceeds, max)) = buffer.outruns() {
+                return Err(CollectError::TooLarge { exceeds, max });
+            }
+            match written {
+                Ok(_) => Ok(buffer.into_bytes()),
+                Err(error) => Err(CollectError::Load(error)),
+            }
+        }
+    }
+
     /// Every bound content path, with its entry, in path order. The format's
     /// root slot never appears.
     fn iter(&self) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend;
@@ -302,6 +328,59 @@ where
         }
     }
     Ok(Served::Missing)
+}
+
+/// One frame the bound rejected. The end `exceeds` is a lower bound on the
+/// entry's total size.
+#[derive(Debug, thiserror::Error)]
+#[error("a frame ending at {exceeds} outruns the {max}-byte bound")]
+struct Refusal {
+    exceeds: u64,
+    max: u64,
+}
+
+/// The positional bytes a [`collect`](ManifestView::collect) assembles: the
+/// bound is checked per frame, so the allocation never passes it.
+struct Capped {
+    bytes: Vec<u8>,
+    max: u64,
+    refused: Option<u64>,
+}
+
+impl Capped {
+    /// Bytes bounded by `max`.
+    const fn new(max: u64) -> Self {
+        Self {
+            bytes: Vec::new(),
+            max,
+            refused: None,
+        }
+    }
+
+    /// The end of the frame the bound rejected, when it rejected one.
+    fn outruns(&self) -> Option<(u64, u64)> {
+        self.refused.map(|exceeds| (exceeds, self.max))
+    }
+
+    /// Consume into the written bytes.
+    fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl WriteAt for Capped {
+    fn write_all_at(&mut self, pos: u64, buf: &[u8]) -> Result<(), BoxedError> {
+        let end = pos.saturating_add(u64::try_from(buf.len()).unwrap_or(u64::MAX));
+        if end > self.max {
+            self.refused = Some(end);
+            return Err(Refusal {
+                exceeds: end,
+                max: self.max,
+            }
+            .into());
+        }
+        self.bytes.write_all_at(pos, buf)
+    }
 }
 
 #[cfg(test)]

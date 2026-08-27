@@ -103,7 +103,7 @@ mod view;
 pub use batch::{Batch, CheckedBatch};
 pub use cursor::{PathCursor, RawCursor, RawItem};
 pub use dynamic::{DynVisit, ErasedManifest};
-pub use error::{ErasedFormat, ErasedManifestError, ManifestError};
+pub use error::{CollectError, ErasedFormat, ErasedManifestError, ManifestError};
 pub use listing::{ListEntry, Listing, collapse_dir};
 pub use meta::{ManifestMeta, MetadataBlock, MetadataSource, MetadataView, WellKnownKey};
 pub use node::{NodeLoader, NodeSaver};

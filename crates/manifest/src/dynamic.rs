@@ -19,7 +19,7 @@ use nectar_tasks::BoxFuture;
 
 use crate::Manifest;
 use crate::batch::Batch;
-use crate::error::{ErasedFormat, ErasedManifestError, ManifestError};
+use crate::error::{CollectError, ErasedFormat, ErasedManifestError, ManifestError};
 use crate::listing::Listing;
 use crate::meta::{ManifestMeta, MetadataSource};
 use crate::op::ManifestOp;
@@ -32,6 +32,16 @@ fn erase<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
     error: ManifestError<F>,
 ) -> ErasedManifestError {
     error.map_format(|format| ErasedFormat(Box::new(format)))
+}
+
+/// An in-memory load failure with its format union boxed.
+fn erase_collect<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
+    error: CollectError<ManifestError<F>>,
+) -> CollectError<ErasedManifestError> {
+    match error {
+        CollectError::TooLarge { exceeds, max } => CollectError::TooLarge { exceeds, max },
+        CollectError::Load(error) => CollectError::Load(erase(error)),
+    }
 }
 
 /// Object-safe visitor for [`ErasedManifest::dyn_for_each`]:
@@ -101,6 +111,14 @@ pub trait ErasedManifest: MaybeSend + MaybeSync {
         path: &'a ManifestPath,
         sink: &'a mut (dyn WriteAt + 'a),
     ) -> BoxFuture<'a, Result<u64, ErasedManifestError>>;
+
+    /// Assemble the data bound to `path` in memory, at most `max` bytes.
+    fn dyn_collect<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        path: &'a ManifestPath,
+        max: u64,
+    ) -> BoxFuture<'a, Result<Vec<u8>, CollectError<ErasedManifestError>>>;
 
     /// The site-level documents the manifest declares, each absent as `None`.
     fn dyn_site_config<'a>(
@@ -213,6 +231,20 @@ where
         sink: &'a mut (dyn WriteAt + 'a),
     ) -> BoxFuture<'a, Result<u64, ErasedManifestError>> {
         Box::pin(async move { self.at(*root).load(path, sink).await.map_err(erase) })
+    }
+
+    fn dyn_collect<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        path: &'a ManifestPath,
+        max: u64,
+    ) -> BoxFuture<'a, Result<Vec<u8>, CollectError<ErasedManifestError>>> {
+        Box::pin(async move {
+            self.at(*root)
+                .collect(path, max)
+                .await
+                .map_err(erase_collect)
+        })
     }
 
     fn dyn_site_config<'a>(
