@@ -18,8 +18,8 @@ use nectar_primitives::{ChunkOps, ChunkRef, ContentOnlyChunkSet};
 use crate::codec::{DecodeError, DecodedChunk, SegDesc, SegmentDir};
 use crate::fork::{Child, ForkTable};
 use crate::format::Format;
+use crate::lookup::{KeyLookup, LookupError};
 use crate::node::{NodeRef, RootExtension};
-use crate::reader::{Reader, ReaderError};
 use crate::scan::{ScanCursor, successor};
 use crate::store::{StoreError, open_chunk};
 use crate::value::{Entry, Key};
@@ -162,7 +162,7 @@ fn covering_index<R: NodeRef>(dir: &SegmentDir<R>, index: u64) -> Option<(u64, &
     None
 }
 
-impl<S, F, R> Reader<S, F, R>
+impl<S, F, R> KeyLookup<S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -170,7 +170,7 @@ where
 {
     /// The number of keys with `lo <= key < hi`, computed as `rank(hi) -
     /// rank(lo)` in two O(depth) descents, so a window's size never fetches it.
-    pub async fn count(&self, root: &R, lo: &Key, hi: &Key) -> Result<u64, ReaderError> {
+    pub async fn count(&self, root: &R, lo: &Key, hi: &Key) -> Result<u64, LookupError> {
         let high = self.rank(root, hi).await?;
         let low = self.rank(root, lo).await?;
         Ok(high.saturating_sub(low))
@@ -182,7 +182,7 @@ where
     /// Descends one referenced hop per level, adding the whole-subtree count of
     /// every fork and segment strictly before the target and recursing only the
     /// one child on its path.
-    pub async fn rank(&self, root: &R, key: &Key) -> Result<u64, ReaderError> {
+    pub async fn rank(&self, root: &R, key: &Key) -> Result<u64, LookupError> {
         let target = key.as_bytes();
         let mut reference = root.clone();
         let mut consumed = 0usize;
@@ -229,7 +229,7 @@ where
         &self,
         root: &R,
         index: u64,
-    ) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
+    ) -> Result<Option<(Key, Entry<F>)>, LookupError> {
         let mut reference = root.clone();
         let mut index = index;
         let mut path: Vec<u8> = Vec::new();
@@ -273,7 +273,7 @@ where
         hi: &Key,
         offset: u64,
         limit: usize,
-    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, LookupError> {
         let end = Some(Bytes::copy_from_slice(hi.as_bytes()));
         let start = self.rank(root, lo).await?.saturating_add(offset);
         self.page(root, start, end, limit).await
@@ -291,7 +291,7 @@ where
         prefix: &Key,
         offset: u64,
         limit: usize,
-    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, LookupError> {
         let end = successor(prefix.as_bytes());
         let start = self.rank(root, prefix).await?.saturating_add(offset);
         self.page(root, start, end, limit).await
@@ -306,7 +306,7 @@ where
         start: u64,
         end: Option<Bytes>,
         limit: usize,
-    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, LookupError> {
         match self.select(root, start).await? {
             None => Ok(ScanCursor::exhausted(self.store())),
             Some((key, _)) => Ok(ScanCursor::seek(self.store(), root, key.as_bytes(), end)
@@ -318,7 +318,7 @@ where
 
 /// Fetch and decode the chunk `reference` reaches without materializing a
 /// spilled node's segments: the descent routes them itself by `seg_count`.
-async fn decode_at<S, F, R>(store: &S, reference: &R) -> Result<DecodedChunk<F, R>, ReaderError>
+async fn decode_at<S, F, R>(store: &S, reference: &R) -> Result<DecodedChunk<F, R>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -329,7 +329,7 @@ where
         .await
         .map_err(StoreError::store)?;
     open_chunk::<F, R>(chunk.envelope().data(), reference)
-        .map_err(|error| ReaderError::Store(StoreError::Decode(error)))
+        .map_err(|error| LookupError::Store(StoreError::Decode(error)))
 }
 
 /// Resolve the ranked positions on the target's path through a decoded chunk,
@@ -339,7 +339,7 @@ async fn on_path<S, F, R>(
     store: &S,
     decoded: &DecodedChunk<F, R>,
     remaining: &[u8],
-) -> Result<OnPath<F, R>, ReaderError>
+) -> Result<OnPath<F, R>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -362,7 +362,7 @@ async fn route_key<S, F, R>(
     store: &S,
     dir: &SegmentDir<R>,
     remaining: &[u8],
-) -> Result<OnPath<F, R>, ReaderError>
+) -> Result<OnPath<F, R>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -407,7 +407,7 @@ async fn index_path<S, F, R>(
     store: &S,
     decoded: &DecodedChunk<F, R>,
     index: &mut u64,
-) -> Result<Option<Vec<Ranked<F, R>>>, ReaderError>
+) -> Result<Option<Vec<Ranked<F, R>>>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -437,8 +437,8 @@ where
 
 /// A malformed-segment decode error: a reference named a node but a bare segment
 /// decoded, or a directory nested past its bound.
-const fn segment_context() -> ReaderError {
-    ReaderError::Store(StoreError::Decode(DecodeError::SegmentContext))
+const fn segment_context() -> LookupError {
+    LookupError::Store(StoreError::Decode(DecodeError::SegmentContext))
 }
 
 /// The outcome of ranking `remaining` through one chunk's fork-table fragment.
@@ -557,7 +557,7 @@ mod tests {
             &Plaintext,
         ))
         .unwrap();
-        let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
+        let reader = KeyLookup::<&ContentGet<MemoryStore>, V1>::new(&store);
 
         // The empty key leads iteration at index 0; "k" follows at index 1.
         assert_eq!(
@@ -607,8 +607,8 @@ mod tests {
             .clone();
         let plain_root = *run(plain.build(&store, &Plaintext)).unwrap().root();
 
-        let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
-        let plain_reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
+        let reader = KeyLookup::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+        let plain_reader = KeyLookup::<&ContentGet<MemoryStore>, V1>::new(&store);
         for (index, key) in keys.iter().enumerate() {
             let key = Key::from(&key[..]);
             let rank = run(reader.rank(&root, &key)).unwrap();
@@ -626,7 +626,7 @@ mod tests {
     fn an_empty_manifest_has_no_keys() {
         let store = ContentGet::new(MemoryStore::default());
         let root = run(save_node(&store, &Node::<V1>::empty(), &Plaintext)).unwrap();
-        let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
+        let reader = KeyLookup::<&ContentGet<MemoryStore>, V1>::new(&store);
         assert_eq!(run(reader.rank(&root, &Key::from(&b"x"[..]))).unwrap(), 0);
         assert_eq!(run(reader.select(&root, 0)).unwrap(), None);
         let mut cursor = run(reader.paginate_prefix(&root, &Key::empty(), 0, 10)).unwrap();

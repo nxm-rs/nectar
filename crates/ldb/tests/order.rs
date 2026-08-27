@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, ensure};
-use nectar_ldb::{Builder, Entry, Key, Plaintext, Reader, V1};
+use nectar_ldb::{Builder, Entry, Key, KeyLookup, Plaintext, V1};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
@@ -100,7 +100,7 @@ fn build(store: &MemoryStore, keys: &[(Key, u8)]) -> Result<ChunkRef> {
 }
 
 /// The ground-truth ordering: every `(key, value)` a full walk yields.
-fn oracle(reader: &Reader<ContentGet<MemoryStore>, V1>, root: &ChunkRef) -> Result<Pairs> {
+fn oracle(reader: &KeyLookup<ContentGet<MemoryStore>, V1>, root: &ChunkRef) -> Result<Pairs> {
     let mut out = Vec::new();
     let mut cursor = run(reader.iter(root))?;
     while let Some(pair) = run(cursor.next())? {
@@ -114,7 +114,7 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> Result<()> {
     let store = MemoryStore::default();
     let keys = radix_keys(12, 3);
     let root = build(&store, &keys)?;
-    let reader = Reader::<_, V1>::new(ContentGet::new(store));
+    let reader = KeyLookup::<_, V1>::new(ContentGet::new(store));
     let all = oracle(&reader, &root)?;
     ensure!(all.len() == keys.len(), "oracle lost keys");
 
@@ -181,7 +181,7 @@ fn spilled_node_order_statistics_agree_with_the_oracle() -> Result<()> {
     let store = MemoryStore::default();
     let keys = wide_keys();
     let root = build(&store, &keys)?;
-    let reader = Reader::<_, V1>::new(ContentGet::new(store));
+    let reader = KeyLookup::<_, V1>::new(ContentGet::new(store));
     let all = oracle(&reader, &root)?;
     ensure!(all.len() == keys.len(), "oracle lost keys");
 
@@ -246,7 +246,7 @@ fn order_statistics_are_stable_under_shuffled_build_order() -> Result<()> {
     let b = build(&b_store, &reversed)?;
     ensure!(a == b, "shuffled build must root identically");
 
-    let reader = Reader::<_, V1>::new(ContentGet::new(a_store));
+    let reader = KeyLookup::<_, V1>::new(ContentGet::new(a_store));
     // A shuffled build is the same tree, so every rank and select is unchanged.
     run(async {
         for index in [0u64, 1, 250, 500, 999] {
@@ -264,7 +264,7 @@ fn paginate_matches_iter_skip_take() -> Result<()> {
     let store = MemoryStore::default();
     let keys = radix_keys(10, 3);
     let root = build(&store, &keys)?;
-    let reader = Reader::<_, V1>::new(ContentGet::new(store));
+    let reader = KeyLookup::<_, V1>::new(ContentGet::new(store));
     let all = oracle(&reader, &root)?;
 
     // Whole-manifest pagination is exactly iter().skip(offset).take(limit).
@@ -318,7 +318,7 @@ fn the_offset_seek_costs_depth_not_offset() -> Result<()> {
         inner: ContentGet::new(inner),
         gets: AtomicUsize::new(0),
     };
-    let reader = Reader::<CountingStore, V1>::new(store);
+    let reader = KeyLookup::<CountingStore, V1>::new(store);
     let total = u64::try_from(keys.len())?;
 
     // Selecting near the start and deep into the listing fetches the same handful

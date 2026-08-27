@@ -8,7 +8,7 @@
 //! - `address = keccak256(id || owner)`
 //!
 //! [`Publisher`] signs and publishes updates through
-//! [`ChunkPut`](nectar_primitives::store::ChunkPut); [`Reader`] fetches and
+//! [`ChunkPut`](nectar_primitives::store::ChunkPut); [`FeedView`] fetches and
 //! certifies them through [`ChunkGet`](nectar_primitives::store::ChunkGet)
 //! and locates the latest [`Sequence`] update by probing classified gets: a
 //! slot is absent only when the store definitively answers not found. No
@@ -50,9 +50,9 @@ mod feed;
 mod index;
 mod probe;
 mod publisher;
-mod reader;
 mod sequence;
 mod update;
+mod view;
 
 // Shadows the `arbitrary` crate at the crate root only: a root-level
 // `use arbitrary::...` needs `::arbitrary::`. Non-root modules resolve the
@@ -64,6 +64,6 @@ pub use error::{FeedError, Result};
 pub use feed::{Feed, Topic};
 pub use index::Index;
 pub use publisher::Publisher;
-pub use reader::{Latest, Reader};
 pub use sequence::Sequence;
 pub use update::FeedUpdate;
+pub use view::{FeedView, Latest};

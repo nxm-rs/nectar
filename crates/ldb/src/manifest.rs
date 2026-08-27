@@ -28,9 +28,9 @@ use crate::builder::Builder;
 use crate::db::{Database, View};
 use crate::folder::{DirEntry, FolderServed};
 use crate::format::{Format, V1};
+use crate::lookup::LookupError;
 use crate::meta::{KeyId, Metadata};
 use crate::node::{Node, NodeRef};
-use crate::reader::ReaderError;
 use crate::scan::ScanCursor;
 use crate::store::{Seal, StoreError, load_node, materialize_traced, save_node};
 use crate::value::{Entry, Key};
@@ -41,13 +41,13 @@ use crate::value::{Entry, Key};
 pub enum LdbFormatError {
     /// A lookup or a listing walk failed.
     #[error(transparent)]
-    Read(#[from] ReaderError),
+    Read(#[from] LookupError),
     /// Folding the batch into a new root failed.
     #[error(transparent)]
     Apply(#[from] ApplyError),
 }
 
-nectar_manifest::format_error_from!(LdbFormatError: ReaderError, ApplyError);
+nectar_manifest::format_error_from!(LdbFormatError: LookupError, ApplyError);
 
 /// The database as a [`Manifest`], keyed by path.
 impl<S, K, R> Manifest<R> for Database<S, K, V1>

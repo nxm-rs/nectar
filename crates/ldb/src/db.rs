@@ -15,9 +15,9 @@ use nectar_primitives::{Chunk, ChunkRef, ContentOnlyChunkSet};
 use crate::apply::{ApplyError, Changeset, apply};
 use crate::folder::{FolderCursor, FolderServed, Website, dir_at};
 use crate::format::{Format, V1};
+use crate::lookup::{KeyLookup, LookupError};
 use crate::meta::{Metadata, MetadataKey};
 use crate::node::NodeRef;
-use crate::reader::{Reader, ReaderError};
 use crate::scan::{ScanCursor, half_open};
 use crate::store::{Plaintext, Seal};
 use crate::value::{Entry, Key};
@@ -228,46 +228,46 @@ where
     F: Format,
     R: NodeRef,
 {
-    const fn reader(&self) -> Reader<&'_ S, F, R> {
-        Reader::new(self.store)
+    const fn lookup(&self) -> KeyLookup<&'_ S, F, R> {
+        KeyLookup::new(self.store)
     }
 
     /// The value bound to `key`. The empty key reads the database's own
     /// value.
-    pub async fn get(&self, key: &Key) -> Result<Option<Entry<F>>, ReaderError> {
-        self.reader().get(&self.root, key).await
+    pub async fn get(&self, key: &Key) -> Result<Option<Entry<F>>, LookupError> {
+        self.lookup().get(&self.root, key).await
     }
 
     /// Whether `key` is bound.
-    pub async fn contains_key(&self, key: &Key) -> Result<bool, ReaderError> {
-        self.reader().contains_key(&self.root, key).await
+    pub async fn contains_key(&self, key: &Key) -> Result<bool, LookupError> {
+        self.lookup().contains_key(&self.root, key).await
     }
 
     /// The metadata bound to `key`. The empty key reads the database's own
     /// manifest metadata, whether or not the root binds an entry.
-    pub async fn metadata(&self, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
-        self.reader().metadata(&self.root, key).await
+    pub async fn metadata(&self, key: &Key) -> Result<Option<Metadata<F>>, LookupError> {
+        self.lookup().metadata(&self.root, key).await
     }
 
     /// The greatest key `<= key`, with its value.
-    pub async fn floor(&self, key: &Key) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
-        self.reader().floor(&self.root, key).await
+    pub async fn floor(&self, key: &Key) -> Result<Option<(Key, Entry<F>)>, LookupError> {
+        self.lookup().floor(&self.root, key).await
     }
 
     /// The reference of the single chunk holding exactly the keys carrying
     /// `prefix`.
-    pub async fn subtree(&self, prefix: &Key) -> Result<Option<R>, ReaderError> {
-        self.reader().subtree(&self.root, prefix).await
+    pub async fn subtree(&self, prefix: &Key) -> Result<Option<R>, LookupError> {
+        self.lookup().subtree(&self.root, prefix).await
     }
 
     /// The database's site-level document conventions.
-    pub async fn website(&self) -> Result<Website, ReaderError> {
-        self.reader().website(&self.root).await
+    pub async fn website(&self) -> Result<Website, LookupError> {
+        self.lookup().website(&self.root).await
     }
 
     /// Resolve a request path to the entry a website server would return.
-    pub async fn serve(&self, path: &Key) -> Result<FolderServed<F>, ReaderError> {
-        self.reader().serve(&self.root, path).await
+    pub async fn serve(&self, path: &Key) -> Result<FolderServed<F>, LookupError> {
+        self.lookup().serve(&self.root, path).await
     }
 }
 
@@ -279,7 +279,7 @@ where
 {
     /// Every `(key, value)` in ascending key order. The walk outlives the
     /// view it was opened through.
-    pub async fn iter(&self) -> Result<ScanCursor<'a, S, F, R>, ReaderError> {
+    pub async fn iter(&self) -> Result<ScanCursor<'a, S, F, R>, LookupError> {
         ScanCursor::seek(self.store, &self.root, &[], None).await
     }
 
@@ -288,20 +288,20 @@ where
     pub async fn range(
         &self,
         bounds: impl RangeBounds<Key>,
-    ) -> Result<ScanCursor<'a, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'a, S, F, R>, LookupError> {
         let (start, end) = half_open(&bounds);
         ScanCursor::seek(self.store, &self.root, &start, end).await
     }
 
     /// Every `(key, value)` whose key starts with `prefix`, in ascending order.
-    pub async fn prefix(&self, prefix: &Key) -> Result<ScanCursor<'a, S, F, R>, ReaderError> {
+    pub async fn prefix(&self, prefix: &Key) -> Result<ScanCursor<'a, S, F, R>, LookupError> {
         let end = crate::scan::successor(prefix.as_bytes());
         ScanCursor::seek(self.store, &self.root, prefix.as_bytes(), end).await
     }
 
     /// The immediate children of the directory named by `dir` in key order,
     /// collapsing deeper keys at the next separator.
-    pub async fn dir(&self, dir: &Key) -> Result<FolderCursor<'a, S, F, R>, ReaderError> {
+    pub async fn dir(&self, dir: &Key) -> Result<FolderCursor<'a, S, F, R>, LookupError> {
         dir_at(self.store, &self.root, dir).await
     }
 }

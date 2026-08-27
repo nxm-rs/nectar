@@ -16,7 +16,7 @@ use nectar_primitives::oracles::Violation;
 use crate::node::Node;
 use crate::persist::single_chunk::SingleChunkLoadSaver;
 use crate::view::NodeView;
-use crate::{DecodeResult, DefaultMemoryStore, ManifestEditor, NodeType, Reader, RefWidth};
+use crate::{DecodeResult, DefaultMemoryStore, ManifestEditor, NodeType, RefWidth, TrieLookup};
 
 /// The single-chunk loadsaver the editor oracle drives.
 type OracleLoadSaver = SingleChunkLoadSaver<DefaultMemoryStore>;
@@ -392,7 +392,7 @@ pub async fn editor_differential(ops: &[EditorOp]) -> Result<(), Violation> {
     };
 
     let want = model(ops);
-    let reader = Reader::new(store);
+    let reader = TrieLookup::new(store);
     for (p, addr) in &want.entries {
         // The empty path is never addressable through the reader.
         if p.is_empty() {

@@ -17,7 +17,8 @@ use nectar_testing::bench::CountingStore;
 use nectar_testing::run;
 
 use nectar_ldb::{
-    Builder, Changeset, Entry, Format, Key, KeyId, Metadata, Plaintext, Reader, V1, V1Read, apply,
+    Builder, Changeset, Entry, Format, Key, KeyId, KeyLookup, Metadata, Plaintext, V1, V1Read,
+    apply,
 };
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, StandardChunkSet};
@@ -183,7 +184,7 @@ fn range_rounds<F: Format>(
 ) -> Result<(u64, u64, u64), Err> {
     let out = block_on_paused(async {
         let latency = LatencyStore::<StandardChunkSet>::new(store, RTT_UNIT);
-        let reader = Reader::<_, F>::new(ContentGet::new(&latency));
+        let reader = KeyLookup::<_, F>::new(ContentGet::new(&latency));
         let t0 = tokio::time::Instant::now();
         let mut cursor = reader.range(root, lo..hi).await?;
         let mut keys = 0u64;
@@ -191,7 +192,7 @@ fn range_rounds<F: Format>(
             keys = keys.saturating_add(1);
         }
         let rounds = t0.elapsed().as_millis() as u64;
-        Ok::<_, nectar_ldb::ReaderError>((latency.gets(), rounds, keys))
+        Ok::<_, nectar_ldb::LookupError>((latency.gets(), rounds, keys))
     })?;
     Ok(out?)
 }
@@ -204,7 +205,7 @@ fn prefix_rounds<F: Format>(
 ) -> Result<(u64, u64, u64), Err> {
     let out = block_on_paused(async {
         let latency = LatencyStore::<StandardChunkSet>::new(store, RTT_UNIT);
-        let reader = Reader::<_, F>::new(ContentGet::new(&latency));
+        let reader = KeyLookup::<_, F>::new(ContentGet::new(&latency));
         let t0 = tokio::time::Instant::now();
         let mut cursor = reader.prefix(root, prefix).await?;
         let mut keys = 0u64;
@@ -212,7 +213,7 @@ fn prefix_rounds<F: Format>(
             keys = keys.saturating_add(1);
         }
         let rounds = t0.elapsed().as_millis() as u64;
-        Ok::<_, nectar_ldb::ReaderError>((latency.gets(), rounds, keys))
+        Ok::<_, nectar_ldb::LookupError>((latency.gets(), rounds, keys))
     })?;
     Ok(out?)
 }
@@ -289,7 +290,7 @@ pub fn parallel_cursor_cells(
 /// Mean and max get-depth over a key sample, counted as store fetches per get.
 fn get_depth<F: Format>(
     store: &CountingStore<StandardChunkSet>,
-    reader: &Reader<ContentGet<&CountingStore<StandardChunkSet>>, F>,
+    reader: &KeyLookup<ContentGet<&CountingStore<StandardChunkSet>>, F>,
     root: &ChunkRef,
     keys: &[GenKey],
     idxs: &[usize],
@@ -316,7 +317,7 @@ fn get_depth<F: Format>(
 /// format over one corpus.
 fn read_side<F: Format>(keys: &[GenKey]) -> Result<ReadProfileSide, Err> {
     let (store, root) = build_counting::<F>(keys)?;
-    let reader = Reader::<_, F>::new(ContentGet::new(&store));
+    let reader = KeyLookup::<_, F>::new(ContentGet::new(&store));
     let n = keys.len();
     let idxs = sample_indices(n, 256);
     let (depth_mean, depth_max) = get_depth::<F>(&store, &reader, &root, keys, &idxs)?;
@@ -412,7 +413,7 @@ pub fn paginate_cells(
     keys: &[GenKey],
 ) -> Result<Vec<PaginateCell>, Err> {
     let (store, root) = build_counting::<V1>(keys)?;
-    let reader = Reader::<_, V1>::new(ContentGet::new(&store));
+    let reader = KeyLookup::<_, V1>::new(ContentGet::new(&store));
     let n = keys.len() as u64;
     let empty = Key::empty();
     let mut cells = Vec::new();
@@ -487,7 +488,7 @@ pub fn subtree_serve_cell(
         return Ok(None);
     };
     let (store, root) = build_counting::<V1>(keys)?;
-    let reader = Reader::<_, V1>::new(ContentGet::new(&store));
+    let reader = KeyLookup::<_, V1>::new(ContentGet::new(&store));
     let pk = Key::from(prefix.as_slice());
 
     let before = store.gets();

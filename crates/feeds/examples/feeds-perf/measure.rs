@@ -6,7 +6,7 @@ use core::error::Error;
 use core::num::NonZeroUsize;
 use std::future::Future;
 
-use nectar_feeds::{Reader, Sequence};
+use nectar_feeds::{FeedView, Sequence};
 
 use crate::corpus::Corpus;
 use crate::store::ProbeStore;
@@ -88,7 +88,7 @@ pub fn measure(
 ) -> Result<Cell, Err> {
     block_on_paused(async {
         let store = ProbeStore::new(corpus, n)?;
-        let reader = Reader::new(corpus.feed(), &store).with_window(width);
+        let reader = FeedView::new(corpus.feed(), &store).with_window(width);
         let t0 = tokio::time::Instant::now();
         let latest = match kind {
             FinderKind::Probing => reader.latest().await?,

@@ -10,12 +10,12 @@
     clippy::unwrap_used
 )]
 
-use nectar_ldb::{Database, Reader as LdbReader};
+use nectar_ldb::{Database, KeyLookup};
 use nectar_manifest::{
     ErasedManifest, Listing, ManifestOp, ManifestPath, MapEntry, MetadataSource, MetadataView,
     SiteConfig, WellKnownKey,
 };
-use nectar_mantaray::{MantarayManifest, NodeLoadSaver, Reader as MantarayReader, metadata};
+use nectar_mantaray::{MantarayManifest, NodeLoadSaver, TrieLookup, metadata};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE};
 use nectar_testing::MemWriteAt;
 use nectar_testing::run;
@@ -193,7 +193,7 @@ fn the_site_config_lands_in_each_format_native_slot() {
         let trie_root = trie.dyn_empty().await.unwrap();
         let root = trie.dyn_set_site_config(&trie_root, config.clone()).await;
         let root = root.unwrap();
-        let entry = MantarayReader::new(nodes)
+        let entry = TrieLookup::new(nodes)
             .get(root, metadata::ROOT_PATH.as_bytes())
             .await
             .unwrap()
@@ -212,7 +212,7 @@ fn the_site_config_lands_in_each_format_native_slot() {
         let kv = Database::<_>::plain(store.clone());
         let kv_root = kv.dyn_empty().await.unwrap();
         let root = kv.dyn_set_site_config(&kv_root, config).await.unwrap();
-        let reader: LdbReader<_> = LdbReader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let website = reader.website(&root).await.unwrap();
         assert_eq!(website.index(), Some(&b"index.html"[..]));
     });

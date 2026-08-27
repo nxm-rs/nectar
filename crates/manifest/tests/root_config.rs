@@ -17,9 +17,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use nectar_ldb::{
-    Builder, Database, Entry, FolderServed, Key, Plaintext, Reader as LdbReader, V1, Website,
-};
+use nectar_ldb::{Builder, Database, Entry, FolderServed, Key, KeyLookup, Plaintext, V1, Website};
 use nectar_manifest::{
     Batch, ListEntry, Manifest, ManifestError, ManifestMeta, ManifestOp, ManifestPath,
     ManifestView, MapEntry, MetadataView, WellKnownKey,
@@ -618,7 +616,7 @@ fn website_documents_resolve_over_bare_keys() {
         })
         .await;
 
-        let reader: LdbReader<_> = LdbReader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let site = reader.website(&root).await.unwrap();
         assert_eq!(site.index(), Some(INDEX.as_bytes()), "index reads back");
         assert_eq!(site.error(), Some(ERROR.as_bytes()), "error reads back");

@@ -13,8 +13,8 @@
 //! Three complementary handles over the node persistence seam cover the
 //! manifest lifecycle:
 //!
-//! - [`Reader`]: depth-guarded point lookups ([`Reader::get`],
-//!   [`Reader::has_prefix`]) with `Ok(None)` on a miss.
+//! - [`TrieLookup`]: depth-guarded point lookups ([`TrieLookup::get`],
+//!   [`TrieLookup::has_prefix`]) with `Ok(None)` on a miss.
 //! - [`TrieListing`] and [`TrieAddressStream`]: ordered listing with bounded
 //!   read-ahead.
 //! - [`ManifestEditor`]: records puts and removes, then commits them in
@@ -122,6 +122,7 @@ pub mod editor;
 pub mod entry;
 pub mod error;
 mod format;
+pub mod lookup;
 #[cfg(feature = "manifest")]
 #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
 pub mod manifest;
@@ -134,7 +135,6 @@ pub mod obfuscation;
 #[doc(hidden)]
 pub mod oracles;
 pub mod persist;
-pub mod reader;
 pub mod view;
 
 // Re-export constants.
@@ -146,8 +146,9 @@ pub use cursor::{TrieAddressStream, TrieListing, Window};
 pub use editor::{ManifestEditor, Op};
 pub use entry::Entry;
 pub use error::{
-    CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
+    CursorError, DecodeError, DecodeResult, EditorError, LookupError, MantarayError, Result,
 };
+pub use lookup::{DEFAULT_MAX_DEPTH, TrieLookup};
 #[cfg(feature = "manifest")]
 pub use manifest::{MantarayManifest, TrieCursor, TrieFormatError, TrieView};
 pub use nectar_manifest::{NodeLoader, NodeSaver};
@@ -156,7 +157,6 @@ pub use obfuscation::ObfuscationKey;
 pub use persist::MAX_NODE_BYTES;
 #[cfg(feature = "manifest")]
 pub use persist::{NodeCollectError, NodeLoadSaver};
-pub use reader::{DEFAULT_MAX_DEPTH, Reader};
 pub use view::{ForkView, NodeView, RefWidth, Version};
 
 /// Raw node internals for fuzz harnesses and benches only.

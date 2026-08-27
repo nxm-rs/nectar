@@ -17,30 +17,30 @@ use nectar_governor::{Admission, Window};
 use nectar_tasks::BoxFuture;
 
 use crate::format::Format;
+use crate::lookup::LookupError;
 use crate::node::NodeRef;
-use crate::reader::ReaderError;
 use crate::scan::Step;
 
 /// A completed fetch tagged with the sequence id it was launched under, so
 /// out-of-order completions route back to the descent that awaits them.
-pub(crate) type Completion<T> = (usize, Result<T, ReaderError>);
+pub(crate) type Completion<T> = (usize, Result<T, LookupError>);
 
 /// Bound on an admissible fetch: `Send` on multi-threaded targets, unbounded
 /// on wasm32 and under the `unsync` feature.
 #[cfg(multi_thread)]
 pub(crate) trait FetchFuture<'a, T>:
-    Future<Output = Result<T, ReaderError>> + Send + 'a
+    Future<Output = Result<T, LookupError>> + Send + 'a
 {
 }
 #[cfg(multi_thread)]
 impl<'a, T, Fut> FetchFuture<'a, T> for Fut where
-    Fut: Future<Output = Result<T, ReaderError>> + Send + 'a
+    Fut: Future<Output = Result<T, LookupError>> + Send + 'a
 {
 }
 #[cfg(not(multi_thread))]
-pub(crate) trait FetchFuture<'a, T>: Future<Output = Result<T, ReaderError>> + 'a {}
+pub(crate) trait FetchFuture<'a, T>: Future<Output = Result<T, LookupError>> + 'a {}
 #[cfg(not(multi_thread))]
-impl<'a, T, Fut> FetchFuture<'a, T> for Fut where Fut: Future<Output = Result<T, ReaderError>> + 'a {}
+impl<'a, T, Fut> FetchFuture<'a, T> for Fut where Fut: Future<Output = Result<T, LookupError>> + 'a {}
 
 /// One chunk's ordered contents plus the walk position within them.
 #[derive(Clone, Debug)]
@@ -159,7 +159,7 @@ pub(crate) fn fill<'a, F, R, T, Fut>(
 pub(crate) fn claim<T>(
     ready: &mut Vec<Completion<T>>,
     seq: usize,
-) -> Option<Result<T, ReaderError>> {
+) -> Option<Result<T, LookupError>> {
     let position = ready.iter().position(|(tag, _)| *tag == seq)?;
     Some(ready.swap_remove(position).1)
 }

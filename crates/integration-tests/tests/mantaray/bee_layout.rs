@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use nectar_manifest::{Batch, Manifest, ManifestPath, ManifestView};
-use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver, Reader, metadata};
+use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver, TrieLookup, metadata};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
 use nectar_testing::run;
@@ -60,7 +60,7 @@ fn a_website_manifest_matches_the_reference_layout() {
         };
 
         // The trie is read below the seam, so this asserts the stored image.
-        let reader = Reader::new(nodes);
+        let reader = TrieLookup::new(nodes);
 
         // Content keys are the bare bytes, byte for byte.
         for (key, byte) in [(&b"index.html"[..], 1u8), (&b"css/style.css"[..], 2)] {

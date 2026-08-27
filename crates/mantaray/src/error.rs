@@ -80,13 +80,13 @@ pub enum DecodeError {
     },
 }
 
-/// Failures of the depth-guarded reader.
+/// Failures of the depth-guarded lookup.
 ///
 /// Absent paths are not errors: lookups report them as `Ok(None)` or
 /// `Ok(false)`.
 #[non_exhaustive]
 #[derive(thiserror::Error, Debug)]
-pub enum ReaderError {
+pub enum LookupError {
     /// The store failed to produce the node chunk at `address`.
     #[error("store get error for {address}: {source}")]
     Store {
@@ -103,7 +103,7 @@ pub enum ReaderError {
         /// The underlying wire decode failure.
         source: DecodeError,
     },
-    /// A lookup needed more node fetches than the reader's budget allows.
+    /// A lookup needed more node fetches than the fetch budget allows.
     #[error("max depth exceeded: {max_depth}")]
     MaxDepth {
         /// The node-fetch budget that was exhausted.

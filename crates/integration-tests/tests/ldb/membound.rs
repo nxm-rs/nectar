@@ -13,8 +13,8 @@ use anyhow::{Result, ensure};
 use arbitrary::Unstructured;
 use bytes::Bytes;
 use nectar_ldb::{
-    ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Plaintext, Reader, V1,
-    apply, generators, recanonicalize,
+    ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, KeyLookup, Metadata, Plaintext,
+    V1, apply, generators, recanonicalize,
 };
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{
@@ -183,7 +183,7 @@ fn a_million_key_manifest_is_depth_bounded() -> Result<()> {
         inner: ContentGet::new(inner),
         gets: AtomicUsize::new(0),
     };
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: KeyLookup<_> = KeyLookup::new(&store);
     run(async {
         for probe in [[0u8, 0, 0], [255, 255, 15], [128, 64, 8], [7, 200, 3]] {
             store.gets.store(0, Ordering::Relaxed);
@@ -222,7 +222,7 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> Result<()> {
     );
     assert_single_chunk_nodes(&store)?;
 
-    let reader: Reader<_> = Reader::new(ContentGet::new(&store));
+    let reader: KeyLookup<_> = KeyLookup::new(ContentGet::new(&store));
     run(async {
         for first in [0u8, 1, 127, 200, 255] {
             let value = reader.get(built.root(), &Key::from(vec![first])).await?;

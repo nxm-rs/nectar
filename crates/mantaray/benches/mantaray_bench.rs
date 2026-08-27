@@ -6,7 +6,9 @@
 )]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nectar_mantaray::{ManifestEditor, MemoryStore, NodeLoadSaver, Reader, TrieListing, hazmat};
+use nectar_mantaray::{
+    ManifestEditor, MemoryStore, NodeLoadSaver, TrieListing, TrieLookup, hazmat,
+};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
 use nectar_primitives::store::ChunkGet;
@@ -95,7 +97,7 @@ fn bench_get(c: &mut Criterion) {
     let mut group = c.benchmark_group("get");
 
     let (root, loadsaver) = build_spa();
-    let reader = Reader::new(loadsaver);
+    let reader = TrieLookup::new(loadsaver);
 
     group.bench_function("existing_path", |b| {
         b.iter(|| {
@@ -105,7 +107,7 @@ fn bench_get(c: &mut Criterion) {
     });
 
     let (large_root, large_loadsaver) = build_large(500);
-    let large_reader = Reader::new(large_loadsaver);
+    let large_reader = TrieLookup::new(large_loadsaver);
 
     group.bench_function("500_paths_deep", |b| {
         b.iter(|| {
@@ -139,7 +141,7 @@ fn bench_has_prefix(c: &mut Criterion) {
     let mut group = c.benchmark_group("has_prefix");
 
     let (root, loadsaver) = build_spa();
-    let reader = Reader::new(loadsaver);
+    let reader = TrieLookup::new(loadsaver);
 
     group.bench_function("existing_prefix", |b| {
         b.iter(|| run(reader.has_prefix(root, b"js/")).unwrap());
@@ -221,7 +223,7 @@ fn bench_full_workflow(c: &mut Criterion) {
     group.bench_function("commit_then_lookup", |b| {
         b.iter(|| {
             let (root, loadsaver) = build_spa();
-            let reader = Reader::new(loadsaver);
+            let reader = TrieLookup::new(loadsaver);
             let paths: &[&[u8]] = &[
                 b"css/app.css",
                 b"favicon.ico",

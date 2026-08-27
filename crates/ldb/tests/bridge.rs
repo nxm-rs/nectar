@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_file::{File, Policy};
-use nectar_ldb::{Builder, Built, Entry, Key, Plaintext, Reader};
+use nectar_ldb::{Builder, Built, Entry, Key, KeyLookup, Plaintext};
 use nectar_primitives::{ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore};
 use nectar_testing::{run, split_whole};
 
@@ -33,7 +33,7 @@ async fn build_files(
 /// Look `key` up in the manifest at `root`, then reassemble the referenced file
 /// byte-exact from its stored chunks.
 async fn fetch_file(store: &MemoryStore, root: &ChunkRef, key: &Key) -> Result<Bytes> {
-    let reader: Reader<_> = Reader::new(ContentGet::new(store.clone()));
+    let reader: KeyLookup<_> = KeyLookup::new(ContentGet::new(store.clone()));
     let entry = reader.get(root, key).await?.context("key present")?;
     let address = *entry.address().context("entry is a reference")?;
     let file = File::<_, DEFAULT_BODY_SIZE>::new(ContentGet::new(store.clone()), Policy::DEFAULT);
