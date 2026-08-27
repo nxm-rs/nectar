@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use bytes::Bytes;
 use nectar_file::{File, Policy};
 use nectar_mantaray::{
-    ManifestEditor, NodeLoadSaver, NodeLoader, Reader, TrieAddressStream, TrieListing,
+    ManifestEditor, NodeLoadSaver, NodeLoader, TrieAddressStream, TrieListing, TrieLookup,
 };
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ContentChunk};
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -103,7 +103,7 @@ fn multi_chunk_root_commits_and_reads_back() {
         assert!(bytes.len() > BODY, "root image is {} bytes", bytes.len());
 
         // Every entry reads back through the adapter.
-        let reader = Reader::new(loadsaver.clone());
+        let reader = TrieLookup::new(loadsaver.clone());
         for b in 0..=u8::MAX {
             let entry = reader.get(root, &[b]).await.unwrap().unwrap();
             assert_eq!(entry.reference().map(|r| *r.address()), Some(byte_addr(b)));
@@ -130,7 +130,7 @@ fn multi_chunk_root_edits_through_the_adapter() {
     editor.insert("added.txt", make_addr("added"));
     let (root, loadsaver) = run(editor.commit()).unwrap();
 
-    let reader = Reader::new(loadsaver);
+    let reader = TrieLookup::new(loadsaver);
     run(async {
         assert!(reader.get(root, &[7u8]).await.unwrap().is_none());
         assert!(reader.get(root, &[8u8]).await.unwrap().is_some());
@@ -179,7 +179,7 @@ fn publish_root_under_path() {
         editor.remove("stale.txt");
         let (manifest_root, loadsaver) = editor.commit().await.unwrap();
 
-        let reader = Reader::new(loadsaver.clone());
+        let reader = TrieLookup::new(loadsaver.clone());
         assert!(
             reader
                 .get(manifest_root, b"stale.txt")
@@ -219,7 +219,7 @@ mod encrypted {
         }
         let (root, loadsaver) = run(editor.commit()).unwrap();
 
-        let reader = Reader::new(loadsaver.clone());
+        let reader = TrieLookup::new(loadsaver.clone());
         run(async {
             for p in paths {
                 let entry = reader
@@ -242,7 +242,7 @@ mod encrypted {
             ManifestEditor::open_encrypted(root, loadsaver);
         editor.insert("secret/c.txt", EncryptedChunkRef::new(make_addr("c"), key));
         let (root, loadsaver) = run(editor.commit()).unwrap();
-        let reader = Reader::new(loadsaver);
+        let reader = TrieLookup::new(loadsaver);
         assert!(run(reader.get(root, b"secret/c.txt")).unwrap().is_some());
     }
 }

@@ -53,7 +53,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Topic {
 
 /// Feed identity: the `(topic, owner)` pair.
 ///
-/// `BODY_SIZE` fixes the chunk geometry the reader and publisher operate at;
+/// `BODY_SIZE` fixes the chunk geometry the view and publisher operate at;
 /// the address derivation itself is body-independent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Feed<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {

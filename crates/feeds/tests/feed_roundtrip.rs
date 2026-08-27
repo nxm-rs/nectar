@@ -13,7 +13,7 @@
 
 use alloy_primitives::hex;
 use alloy_signer_local::PrivateKeySigner;
-use nectar_feeds::{Feed, FeedError, Index, Latest, Publisher, Reader, Sequence, Topic};
+use nectar_feeds::{Feed, FeedError, FeedView, Index, Latest, Publisher, Sequence, Topic};
 use nectar_primitives::chunk::{
     ChunkAddress, ChunkOps, SingleOwnerOnlyChunkSet, TrustedSource, Unverified,
 };
@@ -57,7 +57,7 @@ fn publish_then_read_round_trips() {
         }
         assert_eq!(publisher.next_index(), Some(Sequence::new(3)));
 
-        let reader = Reader::new(feed, &store);
+        let reader = FeedView::new(feed, &store);
         for (n, payload) in (0u64..).zip(payloads) {
             let update = reader.at(Sequence::new(n)).await.unwrap();
             assert_eq!(update.payload().as_ref(), payload);
@@ -72,7 +72,7 @@ fn publish_then_read_round_trips() {
 fn empty_feed_has_no_latest() {
     run(async {
         let signer = signer();
-        let reader = Reader::new(feed_for(&signer), SocStore::new());
+        let reader = FeedView::new(feed_for(&signer), SocStore::new());
 
         for latest in [
             reader.latest().await.unwrap(),
@@ -91,7 +91,7 @@ fn finders_agree_while_the_feed_grows() {
         let feed = feed_for(&signer);
         let store = SocStore::new();
         let mut publisher = Publisher::new(feed, &store, &signer);
-        let reader = Reader::new(feed, &store);
+        let reader = FeedView::new(feed, &store);
 
         for n in 0u64..33 {
             publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
@@ -119,7 +119,7 @@ fn latest_from_respects_the_floor() {
         for n in 0u64..5 {
             publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
-        let reader = Reader::new(feed, &store);
+        let reader = FeedView::new(feed, &store);
 
         let latest = reader.latest_from(Sequence::new(3)).await.unwrap();
         assert_eq!(latest.update.unwrap().index(), &Sequence::new(4));
@@ -166,7 +166,7 @@ fn sequence_space_exhausts_at_the_top_slot() {
         ));
 
         // The finder resumed at the top slot reports the space as spent.
-        let reader = Reader::new(feed, &store);
+        let reader = FeedView::new(feed, &store);
         let latest = reader.latest_from(Sequence::MAX).await.unwrap();
         assert_eq!(latest.update.unwrap().index(), &Sequence::MAX);
         assert_eq!(latest.next, None);
@@ -180,7 +180,7 @@ fn sequence_space_exhausts_at_the_top_slot() {
 fn missing_update_surfaces_the_store_error() {
     run(async {
         let signer = signer();
-        let reader = Reader::new(feed_for(&signer), SocStore::new());
+        let reader = FeedView::new(feed_for(&signer), SocStore::new());
         assert!(matches!(
             reader.at(Sequence::ZERO).await.unwrap_err(),
             FeedError::Store(_)
@@ -215,7 +215,7 @@ fn unverified_reads_are_certified() {
         let mut publisher = Publisher::new(feed, &store, &signer);
         publisher.publish(b"payload".to_vec()).await.unwrap();
 
-        let reader = Reader::new(feed, Unverifying(&store));
+        let reader = FeedView::new(feed, Unverifying(&store));
         let update = reader.at(Sequence::ZERO).await.unwrap();
         assert_eq!(update.payload().as_ref(), b"payload");
 
@@ -254,7 +254,7 @@ fn relabelled_chunk_fails_certification() {
         let mut publisher = Publisher::new(feed, &store, &signer);
         publisher.publish(b"payload".to_vec()).await.unwrap();
 
-        let reader = Reader::new(
+        let reader = FeedView::new(
             feed,
             Rebinding {
                 inner: &store,
@@ -302,7 +302,7 @@ fn content_chunk_at_a_feed_slot_is_a_typed_store_error() {
             source: unsafe { TrustedSource::grant() },
         };
 
-        let reader = Reader::new(feed, store);
+        let reader = FeedView::new(feed, store);
         assert!(matches!(
             reader.at(Sequence::ZERO).await.unwrap_err(),
             FeedError::Store(_)
@@ -322,8 +322,8 @@ fn windowed_finders_agree_with_sequential() {
         }
 
         for width in [1usize, 2, 7, 15] {
-            let reader =
-                Reader::new(feed, &store).with_window(core::num::NonZeroUsize::new(width).unwrap());
+            let reader = FeedView::new(feed, &store)
+                .with_window(core::num::NonZeroUsize::new(width).unwrap());
             for latest in [
                 reader.latest().await.unwrap(),
                 reader.latest_from(Sequence::new(3)).await.unwrap(),
@@ -460,7 +460,7 @@ fn drive_order(
     mut pick: impl FnMut(usize, &[ChunkAddress]) -> ChunkAddress,
 ) -> (Option<Sequence>, Option<Sequence>, usize) {
     let gate = Gate::default();
-    let reader = Reader::new(
+    let reader = FeedView::new(
         feed,
         GatedStore {
             inner,
@@ -635,7 +635,7 @@ fn classified_absence_truncates_and_failure_aborts() {
             publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
 
-        let absent = Reader::new(feed, AbsentOnly).with_window(NonZeroUsize::new(4).unwrap());
+        let absent = FeedView::new(feed, AbsentOnly).with_window(NonZeroUsize::new(4).unwrap());
         for empty in [
             absent.latest().await.unwrap(),
             absent.latest_linear_from(Sequence::ZERO).await.unwrap(),
@@ -648,7 +648,7 @@ fn classified_absence_truncates_and_failure_aborts() {
             Some(Sequence::new(5))
         );
 
-        let failing = Reader::new(feed, Failing).with_window(NonZeroUsize::new(4).unwrap());
+        let failing = FeedView::new(feed, Failing).with_window(NonZeroUsize::new(4).unwrap());
         assert!(matches!(
             failing.latest().await.unwrap_err(),
             FeedError::Store(_)
@@ -680,14 +680,14 @@ fn absent_floor_yields_the_empty_result() {
             publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
 
-        let reader = Reader::new(feed, &store).with_window(NonZeroUsize::new(4).unwrap());
+        let reader = FeedView::new(feed, &store).with_window(NonZeroUsize::new(4).unwrap());
         let empty = reader.latest_from(Sequence::new(5)).await.unwrap();
         assert!(empty.update.is_none());
         assert_eq!(empty.next, Some(Sequence::new(5)));
     });
 }
 
-/// Pins the layer-2 vocabulary: the read handle is `Reader`, the write handle
+/// Pins the layer-2 vocabulary: the read handle is `FeedView`, the write handle
 /// is `Publisher`, and the explicit-slot verb is `publish_at`. The written
 /// types are spelled out, so a rename back to a `get` or `put` verb fails this
 /// test at compile time.
@@ -708,7 +708,7 @@ fn publish_at_writes_an_explicit_slot_without_moving_the_cursor() {
         // The explicit verb takes `&self`, so the cursor never moves.
         assert_eq!(publisher.next_index(), Some(Sequence::ZERO));
 
-        let reader: Reader<&SocStore> = Reader::new(feed, &store);
+        let reader: FeedView<&SocStore> = FeedView::new(feed, &store);
         let read = reader.at(Sequence::new(7)).await.unwrap();
         assert_eq!(read.payload().as_ref(), b"seven");
         assert_eq!(read.address(), written.address());
@@ -767,7 +767,7 @@ proptest! {
             let mut publisher = Publisher::new(feed, &store, &signer);
             let written = publisher.publish(payload.clone()).await.unwrap();
 
-            let reader = Reader::new(feed, &store);
+            let reader = FeedView::new(feed, &store);
             let read = reader.at(Sequence::ZERO).await.unwrap();
             prop_assert_eq!(read.payload().as_ref(), payload.as_slice());
             prop_assert_eq!(read.address(), written.address());

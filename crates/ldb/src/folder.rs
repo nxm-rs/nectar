@@ -25,9 +25,9 @@ use nectar_primitives::{ChunkRef, ContentOnlyChunkSet};
 use nectar_tasks::BoxFuture;
 
 use crate::format::{Format, V1};
+use crate::lookup::{KeyLookup, LookupError};
 use crate::meta::{KeyId, MetadataKey};
 use crate::node::{Node, NodeRef};
-use crate::reader::{Reader, ReaderError};
 use crate::scan::{ScanCursor, successor};
 use crate::store::load_node;
 use crate::value::{Entry, Key};
@@ -71,7 +71,7 @@ impl<F: Format> DirEntry<F> {
 
 /// The re-seek of a named subtree, in place of the walked cursor until it
 /// lands.
-type SeekFuture<'a, S, F, R> = BoxFuture<'a, Result<ScanCursor<'a, S, F, R>, ReaderError>>;
+type SeekFuture<'a, S, F, R> = BoxFuture<'a, Result<ScanCursor<'a, S, F, R>, LookupError>>;
 
 /// A streaming listing of one directory's immediate children in key order.
 ///
@@ -122,7 +122,7 @@ where
 {
     /// The next immediate child of the directory in key order, or `None` at its
     /// end.
-    pub async fn next(&mut self) -> Result<Option<DirEntry<F>>, ReaderError> {
+    pub async fn next(&mut self) -> Result<Option<DirEntry<F>>, LookupError> {
         poll_fn(|cx| self.poll_step(cx)).await.transpose()
     }
 
@@ -134,7 +134,7 @@ where
     fn poll_step(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<DirEntry<F>, ReaderError>>> {
+    ) -> Poll<Option<Result<DirEntry<F>, LookupError>>> {
         loop {
             if let Some(outcome) = self.seek.as_mut().map(|seek| seek.as_mut().poll(cx)) {
                 match outcome {
@@ -215,7 +215,7 @@ where
     R: NodeRef + Unpin,
 {
     /// One immediate child of the directory in key order; `None` at its end.
-    type Item = Result<DirEntry<F>, ReaderError>;
+    type Item = Result<DirEntry<F>, LookupError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.get_mut().poll_step(cx)
@@ -298,7 +298,7 @@ impl<F: Format> FolderServed<F> {
     }
 }
 
-impl<S, F, R> Reader<S, F, R>
+impl<S, F, R> KeyLookup<S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -310,13 +310,13 @@ where
     /// `dir` is used as a key prefix: the root is the empty key and a nested
     /// directory conventionally ends with the separator. Only the trie nodes on
     /// the frontier are fetched; the value chunks a listing names are not.
-    pub async fn dir(&self, root: &R, dir: &Key) -> Result<FolderCursor<'_, S, F, R>, ReaderError> {
+    pub async fn dir(&self, root: &R, dir: &Key) -> Result<FolderCursor<'_, S, F, R>, LookupError> {
         dir_at(self.store(), root, dir).await
     }
 
     /// The manifest's site-level document conventions, read from the root's
     /// typed metadata.
-    pub async fn website(&self, root: &R) -> Result<Website, ReaderError> {
+    pub async fn website(&self, root: &R) -> Result<Website, LookupError> {
         let node = load_node::<_, F, R>(self.store(), root).await?;
         Ok(Website {
             index: document(&node, KeyId::WebsiteIndexDocument),
@@ -334,7 +334,7 @@ where
     /// The index document is a filename joined below each directory, so
     /// `"docs/"` resolves `"docs/index.html"`. The error document is one whole
     /// key: `"404.html"`.
-    pub async fn serve(&self, root: &R, path: &Key) -> Result<FolderServed<F>, ReaderError> {
+    pub async fn serve(&self, root: &R, path: &Key) -> Result<FolderServed<F>, LookupError> {
         if let Some(entry) = self.get(root, path).await? {
             return Ok(FolderServed::Exact {
                 key: path.clone(),
@@ -366,14 +366,14 @@ pub(crate) async fn dir_at<'a, S, F, R>(
     store: &'a S,
     root: &R,
     dir: &Key,
-) -> Result<FolderCursor<'a, S, F, R>, ReaderError>
+) -> Result<FolderCursor<'a, S, F, R>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
     let prefix = dir.as_bytes();
-    let reader: Reader<&'a S, F, R> = Reader::new(store);
+    let reader: KeyLookup<&'a S, F, R> = KeyLookup::new(store);
     // When the directory's keys are exactly one referenced chunk reached at the
     // prefix boundary, delegate the walk to that subtree root: it holds
     // precisely the directory's keys, so the walk starts there and needs no
@@ -493,7 +493,7 @@ mod tests {
                 (b"style.css", 0x04),
             ],
         );
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
 
         // The root lists two files and one collapsed directory, in key order.
         let got = entries(run(reader.dir(&root, &Key::empty())).unwrap());
@@ -519,7 +519,7 @@ mod tests {
                 (b"other.txt", 0x06),
             ],
         );
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
 
         let got = entries(run(reader.dir(&root, &Key::from(&b"img/"[..]))).unwrap());
         assert_eq!(got, vec![dir(b"img/icons/"), file(b"img/logo.png", 0x02)]);
@@ -539,7 +539,7 @@ mod tests {
                 (b"c.txt", 0x04),
             ],
         );
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
 
         let got = entries(run(reader.dir(&root, &Key::empty())).unwrap());
         assert_eq!(got, vec![dir(b"a/"), dir(b"b/"), file(b"c.txt", 0x04)]);
@@ -551,7 +551,7 @@ mod tests {
         // A key exactly equal to the listed directory path is the directory
         // itself, not a child.
         let root = manifest(&store, &[(b"dir/", 0x01), (b"dir/a", 0x02)]);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
 
         let got = entries(run(reader.dir(&root, &Key::from(&b"dir/"[..]))).unwrap());
         assert_eq!(got, vec![file(b"dir/a", 0x02)]);
@@ -570,7 +570,7 @@ mod tests {
         let root = manifest(&store.inner, &refs);
         store.reset();
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got = entries_counting(run(reader.dir(&root, &Key::empty())).unwrap());
         assert_eq!(got, vec![dir(b"deep/"), file(b"top.txt", 0xFF)]);
         // Seeking past the subtree keeps the fetch count to the frontier, far
@@ -629,7 +629,7 @@ mod tests {
             .unwrap();
         let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got = entries(run(reader.dir(&root, &Key::from(&b"mg/"[..]))).unwrap());
         assert_eq!(got, vec![dir(b"mg/a/"), file(b"mg/logo.png", 0xBB)]);
     }
@@ -638,7 +638,7 @@ mod tests {
     fn serve_prefers_an_exact_key() {
         let store = ContentGet::new(MemoryStore::default());
         let root = manifest(&store, &[(b"a.html", 0x01)]);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"a.html"[..]))).unwrap(),
             FolderServed::Exact {
@@ -662,7 +662,7 @@ mod tests {
             .unwrap(),
         );
         let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
 
         // The root path resolves to the top-level index document.
         assert_eq!(
@@ -699,7 +699,7 @@ mod tests {
             Metadata::new(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html")).unwrap(),
         );
         let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
 
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"missing"[..]))).unwrap(),
@@ -714,7 +714,7 @@ mod tests {
     fn serve_missing_without_conventions_is_missing() {
         let store = ContentGet::new(MemoryStore::default());
         let root = manifest(&store, &[(b"a.html", 0x01)]);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             run(reader.serve(&root, &Key::from(&b"nope"[..]))).unwrap(),
             FolderServed::Missing
@@ -735,7 +735,7 @@ mod tests {
             .unwrap();
         builder.manifest_metadata(meta);
         let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
 
         let site = run(reader.website(&root)).unwrap();
         assert_eq!(site.index(), Some(&b"index.html"[..]));

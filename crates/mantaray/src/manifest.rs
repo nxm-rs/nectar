@@ -7,7 +7,7 @@
 //! and whose data lives behind another is therefore expressible, and the
 //! common case passes the same store twice.
 //!
-//! [`TrieView`] reads one root through the depth-guarded reader; the walks are
+//! [`TrieView`] reads one root through the depth-guarded lookup; the walks are
 //! the raw [`TrieCursor`] under the seam's [`PathCursor`]. [`Manifest::apply`]
 //! replays the checked batch through [`ManifestEditor`].
 
@@ -30,9 +30,9 @@ use nectar_primitives::store::{ContentGet, MaybeSend, MaybeSync, TrustedGet, Wri
 
 use crate::cursor::TrieListing;
 use crate::editor::ManifestEditor;
-use crate::error::{CursorError, EditorError, ReaderError};
+use crate::error::{CursorError, EditorError, LookupError};
+use crate::lookup::TrieLookup;
 use crate::persist::NodeLoadSaver;
-use crate::reader::Reader;
 use crate::{constants::metadata, entry::Entry};
 
 /// The trie's own failures behind [`ManifestError::Format`].
@@ -41,7 +41,7 @@ use crate::{constants::metadata, entry::Entry};
 pub enum TrieFormatError {
     /// A path lookup failed.
     #[error(transparent)]
-    Read(#[from] ReaderError),
+    Read(#[from] LookupError),
     /// A listing walk failed.
     #[error(transparent)]
     List(#[from] CursorError),
@@ -50,7 +50,7 @@ pub enum TrieFormatError {
     Edit(#[from] EditorError),
 }
 
-nectar_manifest::format_error_from!(TrieFormatError: ReaderError, CursorError, EditorError);
+nectar_manifest::format_error_from!(TrieFormatError: LookupError, CursorError, EditorError);
 
 /// The trie as a [`Manifest`]: a node adapter for the trie itself and a chunk
 /// store for entry data.
@@ -216,13 +216,13 @@ where
         let Some(key) = path.content_key() else {
             return Ok(None);
         };
-        let reader = Reader::new(self.nodes.clone());
+        let reader = TrieLookup::new(self.nodes.clone());
         Ok(reader.get(self.root.clone().into_entry_ref(), key).await?)
     }
 
     /// The trie's site-config node, which the reference client keys at `"/"`.
     async fn root_node(&self) -> Result<Option<Entry>, ManifestError<TrieFormatError>> {
-        let reader = Reader::new(self.nodes.clone());
+        let reader = TrieLookup::new(self.nodes.clone());
         Ok(reader
             .get(
                 self.root.clone().into_entry_ref(),

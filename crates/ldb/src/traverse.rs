@@ -23,8 +23,8 @@ use nectar_tasks::BoxFuture;
 
 use crate::format::{Format, V1};
 use crate::frontier::{Completion, Frame, Plan, claim, fill};
+use crate::lookup::{KeyLookup, LookupError};
 use crate::node::NodeRef;
-use crate::reader::{Reader, ReaderError};
 use crate::scan::{Step, flatten};
 use crate::store::materialize_traced;
 
@@ -36,7 +36,7 @@ type Visited<F, R> = (Vec<Step<F, R>>, Vec<ChunkAddress>);
 type Fetched<F, R> = Completion<Visited<F, R>>;
 
 /// One delivered turn of the walk: an address or a non-terminal fault.
-type Turn = Result<ChunkAddress, ReaderError>;
+type Turn = Result<ChunkAddress, LookupError>;
 
 /// What visiting the top frame's next step resolves to, computed under a
 /// short borrow so the stack push never overlaps it.
@@ -78,7 +78,7 @@ pub struct ScanAddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     /// The root reference, replayed until its first visit lands.
     root: R,
     /// The root's own fetch, in place of the walk until it lands.
-    root_fetch: Option<BoxFuture<'a, Result<Visited<F, R>, ReaderError>>>,
+    root_fetch: Option<BoxFuture<'a, Result<Visited<F, R>, LookupError>>>,
     done: bool,
     /// Addresses discovered ahead of delivery: a visited node's own chunk
     /// and its segment chunks.
@@ -126,7 +126,7 @@ where
                     materialize_traced::<S, F, R>(store, &reference)
                         .await
                         .map(|(node, segments)| (flatten(&node, false), segments))
-                        .map_err(ReaderError::from)
+                        .map_err(LookupError::from)
                 })
             },
         );
@@ -239,7 +239,7 @@ where
     }
 
     /// The next address in the closure, or `None` when the walk is done.
-    pub async fn next(&mut self) -> Result<Option<ChunkAddress>, ReaderError> {
+    pub async fn next(&mut self) -> Result<Option<ChunkAddress>, LookupError> {
         poll_fn(|cx| self.poll_step(cx)).await.transpose()
     }
 
@@ -247,7 +247,7 @@ where
     fn poll_step(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<ChunkAddress, ReaderError>>> {
+    ) -> Poll<Option<Result<ChunkAddress, LookupError>>> {
         // The root's own fetch gates the walk; a fault replays it.
         if let Some(outcome) = self
             .root_fetch
@@ -304,7 +304,7 @@ where
     R: NodeRef + Unpin,
 {
     /// The next address in the closure; `None` when the walk is done.
-    type Item = Result<ChunkAddress, ReaderError>;
+    type Item = Result<ChunkAddress, LookupError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.get_mut().poll_step(cx)
@@ -319,13 +319,13 @@ where
 {
     /// The root's own fetch: its node's steps with the visit flag set, and its
     /// segment chunks.
-    async fn root_visit(store: &'a S, root: R) -> Result<Visited<F, R>, ReaderError> {
+    async fn root_visit(store: &'a S, root: R) -> Result<Visited<F, R>, LookupError> {
         let (node, segments) = materialize_traced::<S, F, R>(store, &root).await?;
         Ok((flatten(&node, true), segments))
     }
 }
 
-impl<S, F, R> Reader<S, F, R>
+impl<S, F, R> KeyLookup<S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -417,7 +417,7 @@ mod tests {
     fn streams_nodes_and_entry_addresses_depth_first() {
         let store = ContentGet::new(MemoryStore::default());
         let (root, leaf) = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got = drain(reader.addresses(&root));
         assert_eq!(
             got,
@@ -438,7 +438,7 @@ mod tests {
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
         let root = run(save_node(&store, &Node::new(root_ext, forks), &Plaintext)).unwrap();
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             drain(reader.addresses(&root)),
             vec![*root.address(), addr(9), addr(1)]
@@ -457,7 +457,7 @@ mod tests {
             )
             .unwrap();
         let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(drain(reader.addresses(&root)), vec![*root.address()]);
     }
 
@@ -477,7 +477,7 @@ mod tests {
             )
             .unwrap();
         let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             drain(reader.addresses(&root)),
             vec![*root.address(), addr(0x77)]
@@ -497,7 +497,7 @@ mod tests {
                 .unwrap();
         }
         let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             drain(reader.addresses(&root)),
             vec![
@@ -532,7 +532,7 @@ mod tests {
             .collect();
         assert!(!segments.is_empty());
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got = drain(reader.addresses(&root));
         let mut expected = vec![*root.address()];
         expected.extend(segments);
@@ -572,7 +572,7 @@ mod tests {
             .clone();
         // Same chunk, read as a plaintext database: the ciphertext is not even
         // a manifest preamble.
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let mut stream = reader.addresses(&ChunkRef::new(*encrypted.address()));
         assert!(run(stream.next()).is_err());
     }
@@ -638,7 +638,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let (root, leaf) = sample(&store);
         let slow = SlowStore::new(store);
-        let reader: Reader<_> = Reader::new(&slow);
+        let reader: KeyLookup<_> = KeyLookup::new(&slow);
         run(async {
             let mut stream = reader.addresses(&root);
             {
@@ -709,7 +709,7 @@ mod tests {
             peak: AtomicUsize::new(0),
         };
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         drain(reader.addresses(&root));
 
         let peak = store.peak.load(Ordering::Relaxed);
@@ -731,7 +731,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let (root, leaf) = sample(&store);
         let slow = SlowStore::new(store);
-        let reader: Reader<_> = Reader::new(&slow);
+        let reader: KeyLookup<_> = KeyLookup::new(&slow);
         drain(reader.addresses(&root));
         // Entry addresses are named, never fetched; each node is fetched
         // exactly once, the descent taking the prefetched copy.
@@ -796,7 +796,7 @@ mod tests {
             let root = Node::new(root_ext, forks);
             let root_ref = run(save_node(&store, &root, &seal())).unwrap();
 
-            let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+            let reader = KeyLookup::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
             assert_eq!(
                 drain_encrypted(reader.addresses(&root_ref)),
                 vec![
@@ -832,7 +832,7 @@ mod tests {
             };
             assert!(dir.descriptors.len() > 1);
 
-            let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+            let reader = KeyLookup::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
             let mut expected = vec![*root.address()];
             expected.extend(dir.descriptors.iter().map(|d| *d.reference.address()));
             expected.extend((0u8..=255).map(addr));

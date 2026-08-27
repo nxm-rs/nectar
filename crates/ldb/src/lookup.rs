@@ -1,10 +1,10 @@
-//! Memory-bounded streaming reader: lazy, fetch-on-demand descent of the trie.
+//! Memory-bounded key lookup: lazy, fetch-on-demand descent of the trie.
 //!
 //! A lookup follows one fork per node down the radix-256 trie, fetching only
 //! the single child on the key's path at each referenced hop; a whole level is
 //! never materialized, so peak retained state is O(depth), not O(level width).
-//! The reader holds nothing but the store trait, so a caching store composes
-//! beneath it without the reader's knowledge.
+//! The lookup holds nothing but the store trait, so a caching store composes
+//! beneath it without the lookup's knowledge.
 
 use core::marker::PhantomData;
 
@@ -22,13 +22,13 @@ use crate::value::{Entry, Key};
 /// A lookup failure.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
-pub enum ReaderError {
+pub enum LookupError {
     /// Loading or decoding a node across the store seam failed.
     #[error(transparent)]
     Store(#[from] StoreError),
 }
 
-/// Lazy trie reader over a trusted node store of format `F`, addressing nodes
+/// Lazy key lookup over a trusted node store of format `F`, addressing nodes
 /// by references of width `R`.
 ///
 /// Descent is serial: each referenced hop is one fetch, so a lookup costs
@@ -36,14 +36,14 @@ pub enum ReaderError {
 /// An encrypted database needs no extra state here: every reference carries
 /// the key that opens the chunk it names.
 #[derive(Clone, Copy, Debug)]
-pub struct Reader<S, F: Format = V1, R: NodeRef = ChunkRef> {
+pub struct KeyLookup<S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: S,
     _format: PhantomData<F>,
     _reference: PhantomData<R>,
 }
 
-impl<S, F: Format, R: NodeRef> Reader<S, F, R> {
-    /// Wrap `store` as a reader; compose a caching store here to cache hops.
+impl<S, F: Format, R: NodeRef> KeyLookup<S, F, R> {
+    /// Wrap `store` as a key lookup; compose a caching store here to cache hops.
     #[must_use]
     pub const fn new(store: S) -> Self {
         Self {
@@ -66,7 +66,7 @@ impl<S, F: Format, R: NodeRef> Reader<S, F, R> {
     }
 }
 
-impl<S, F: Format, R: NodeRef> Reader<S, F, R>
+impl<S, F: Format, R: NodeRef> KeyLookup<S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
 {
@@ -76,13 +76,13 @@ where
     /// The empty key reads the root extension's own value; every other key
     /// descends the trie, matching each compacted edge byte for byte and
     /// fetching one node per referenced hop.
-    pub async fn get(&self, root: &R, key: &Key) -> Result<Option<Entry<F>>, ReaderError> {
+    pub async fn get(&self, root: &R, key: &Key) -> Result<Option<Entry<F>>, LookupError> {
         Ok(self.lookup(root, key).await?.map(|(entry, _)| entry))
     }
 
     /// Whether `key` is bound under the database rooted at `root`. No value
     /// chunk is fetched.
-    pub async fn contains_key(&self, root: &R, key: &Key) -> Result<bool, ReaderError> {
+    pub async fn contains_key(&self, root: &R, key: &Key) -> Result<bool, LookupError> {
         Ok(self.lookup(root, key).await?.is_some())
     }
 
@@ -91,7 +91,7 @@ where
     /// The empty key reads the database's own manifest metadata, whether or not
     /// the root binds an entry. An absent key also reads `None`, so this is no
     /// presence answer; ask [`contains_key`](Self::contains_key) for that.
-    pub async fn metadata(&self, root: &R, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
+    pub async fn metadata(&self, root: &R, key: &Key) -> Result<Option<Metadata<F>>, LookupError> {
         if key.is_empty() {
             let decoded = fetch_chunk::<S, F, R>(&self.store, root).await?;
             return Ok(root_extension(&decoded).1);
@@ -104,7 +104,7 @@ where
         &self,
         root: &R,
         key: &Key,
-    ) -> Result<Option<(Entry<F>, Option<Metadata<F>>)>, ReaderError> {
+    ) -> Result<Option<(Entry<F>, Option<Metadata<F>>)>, LookupError> {
         let key = key.as_bytes();
         let mut reference = root.clone();
         let mut pos = 0usize;
@@ -148,7 +148,7 @@ where
     /// reference. The result is `None` when no single chunk's key set is
     /// exactly the prefix's: the prefix selects nothing, ends inside an embedded
     /// child, or ends at a fork that also terminates a key.
-    pub async fn subtree(&self, root: &R, prefix: &Key) -> Result<Option<R>, ReaderError> {
+    pub async fn subtree(&self, root: &R, prefix: &Key) -> Result<Option<R>, LookupError> {
         Ok(self
             .descend_subtree(root, prefix.as_bytes())
             .await?
@@ -165,7 +165,7 @@ where
         &self,
         root: &R,
         prefix: &[u8],
-    ) -> Result<Option<Subtree<R>>, ReaderError> {
+    ) -> Result<Option<Subtree<R>>, LookupError> {
         if prefix.is_empty() {
             return Ok(Some(Subtree {
                 reference: root.clone(),
@@ -194,14 +194,14 @@ where
 }
 
 /// A malformed segment structure reached out of directory context.
-const fn segment_context() -> ReaderError {
-    ReaderError::Store(StoreError::Decode(
+const fn segment_context() -> LookupError {
+    LookupError::Store(StoreError::Decode(
         crate::codec::DecodeError::SegmentContext,
     ))
 }
 
 /// Fetch and decode one chunk, opening it with the key `reference` carries.
-async fn fetch_chunk<S, F, R>(store: &S, reference: &R) -> Result<DecodedChunk<F, R>, ReaderError>
+async fn fetch_chunk<S, F, R>(store: &S, reference: &R) -> Result<DecodedChunk<F, R>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -338,7 +338,7 @@ async fn covering_leaf<S, F, R>(
     top: &SegmentDir<R>,
     key: &[u8],
     pos: usize,
-) -> Result<Option<ForkTable<F, R>>, ReaderError>
+) -> Result<Option<ForkTable<F, R>>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -474,7 +474,7 @@ mod tests {
             .unwrap();
         let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             run(reader.get(&root, &Key::from(&b"index.html"[..]))).unwrap(),
             Some(entry(0xAA)),
@@ -506,7 +506,7 @@ mod tests {
             .unwrap();
         let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         // "ab" terminates, "a" is only a branch.
         assert_eq!(
             run(reader.get(&root, &Key::from(&b"ab"[..]))).unwrap(),
@@ -526,7 +526,7 @@ mod tests {
         ))
         .unwrap();
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             run(reader.get(&root, &Key::empty())).unwrap(),
             Some(entry(9)),
@@ -549,7 +549,7 @@ mod tests {
         ))
         .unwrap();
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             run(reader.metadata(&root, &Key::empty())).unwrap(),
             Some(meta)
@@ -568,7 +568,7 @@ mod tests {
             .unwrap();
         let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
 
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             run(reader.get(&root, &Key::from(&b"k"[..]))).unwrap(),
             Some(value),
@@ -602,7 +602,7 @@ mod tests {
     fn subtree_of_the_empty_prefix_is_the_root() {
         let store = ContentGet::new(MemoryStore::default());
         let (root, _) = subtree_sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             run(reader.subtree(&root, &Key::empty())).unwrap(),
             Some(root)
@@ -613,7 +613,7 @@ mod tests {
     fn subtree_returns_the_referenced_child_covering_the_prefix() {
         let store = ContentGet::new(MemoryStore::default());
         let (root, leaf_ref) = subtree_sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         // The prefix ends exactly at the referenced edge: the child is the
         // subtree root, and its key set is exactly the "mg/" keys.
         assert_eq!(
@@ -632,7 +632,7 @@ mod tests {
     fn subtree_of_a_mid_edge_prefix_with_no_boundary_is_none() {
         let store = ContentGet::new(MemoryStore::default());
         let (root, _) = subtree_sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         // "mg/logo" lands within the leaf's "logo.png" edge, which terminates a
         // key rather than referencing a child: no chunk holds exactly its keys.
         assert_eq!(
@@ -645,7 +645,7 @@ mod tests {
     fn subtree_of_an_embedded_prefix_is_none() {
         let store = ContentGet::new(MemoryStore::default());
         let (root, _) = subtree_sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         // "index.html" lives embedded in the root chunk, with no chunk of its
         // own to hand off.
         assert_eq!(
@@ -658,7 +658,7 @@ mod tests {
     fn subtree_of_an_absent_prefix_is_none() {
         let store = ContentGet::new(MemoryStore::default());
         let (root, _) = subtree_sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         assert_eq!(
             run(reader.subtree(&root, &Key::from(&b"zzz"[..]))).unwrap(),
             None,
@@ -685,7 +685,7 @@ mod tests {
             .root()
             .clone();
 
-        let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+        let reader = KeyLookup::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
         assert_eq!(
             run(reader.get(&root, &Key::from(&b"index.html"[..]))).unwrap(),
             Some(entry(0xAA)),
@@ -709,7 +709,7 @@ mod tests {
     fn subtree_covers_exactly_the_prefix_key_set() {
         let store = ContentGet::new(MemoryStore::default());
         let (root, leaf_ref) = subtree_sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let sub = run(reader.subtree(&root, &Key::from(&b"mg/"[..])))
             .unwrap()
             .unwrap();
@@ -740,12 +740,12 @@ mod tests {
     #[test]
     fn a_missing_root_is_a_store_error() {
         let store = ContentGet::new(MemoryStore::default());
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let err = run(reader.get(
             &ChunkRef::new(ChunkAddress::new([0; 32])),
             &Key::from(&b"x"[..]),
         ))
         .unwrap_err();
-        assert!(matches!(err, ReaderError::Store(StoreError::Store(_))));
+        assert!(matches!(err, LookupError::Store(StoreError::Store(_))));
     }
 }

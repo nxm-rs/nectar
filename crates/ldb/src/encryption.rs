@@ -15,7 +15,7 @@
 //! manifest preamble, so a plain decode of an encrypted chunk fails loud.
 //!
 //! Only the write side needs the secret. Reading takes the reference alone, so
-//! [`Reader`](crate::Reader) and [`apply`](crate::apply) open an encrypted
+//! [`KeyLookup`](crate::KeyLookup) and [`apply`](crate::apply) open an encrypted
 //! database with no extra state.
 //!
 //! # Privacy

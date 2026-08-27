@@ -52,7 +52,7 @@ mod pipeline {
     /// node keeps the content-chunk address, so existing roots are unchanged.
     ///
     /// ```
-    /// use nectar_mantaray::{ManifestEditor, NodeLoadSaver, Reader};
+    /// use nectar_mantaray::{ManifestEditor, NodeLoadSaver, TrieLookup};
     /// use nectar_primitives::StandardChunkSet;
     /// use nectar_primitives::chunk::ChunkAddress;
     /// use nectar_primitives::store::MemoryStore;
@@ -62,7 +62,7 @@ mod pipeline {
     /// let mut editor = ManifestEditor::new(loadsaver);
     /// editor.insert("hello.txt", ChunkAddress::from([7u8; 32]));
     /// let (root, loadsaver) = editor.commit().await.unwrap();
-    /// let entry = Reader::new(loadsaver).get(root, b"hello.txt").await.unwrap();
+    /// let entry = TrieLookup::new(loadsaver).get(root, b"hello.txt").await.unwrap();
     /// assert!(entry.is_some());
     /// # });
     /// ```

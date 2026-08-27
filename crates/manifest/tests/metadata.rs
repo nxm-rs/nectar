@@ -19,7 +19,7 @@ use nectar_manifest::WellKnownKey::{ContentType, Custom, ErrorDocument, Filename
 use nectar_manifest::{
     ErasedManifest, ManifestMeta, ManifestPath, MetadataSource, MetadataView, WellKnownKey,
 };
-use nectar_mantaray::{MantarayManifest, NodeLoadSaver, Reader as MantarayReader, metadata};
+use nectar_mantaray::{MantarayManifest, NodeLoadSaver, TrieLookup, metadata};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE};
 use nectar_testing::run;
 
@@ -235,7 +235,7 @@ fn an_erased_write_lands_the_reference_client_spelling_in_the_trie() {
         let root = trie.dyn_insert(&base, path.clone(), file, &meta).await;
         let root = root.unwrap();
 
-        let reader = MantarayReader::new(nodes);
+        let reader = TrieLookup::new(nodes);
         let entry = reader.get(root, b"index.html").await.unwrap();
         let entry = entry.expect("the erased insert landed");
         let got = entry.metadata().get(metadata::CONTENT_TYPE);

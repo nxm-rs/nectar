@@ -55,7 +55,7 @@
 //!
 //! The developer surface is a root-bound handle: [`Database::at`] gives a
 //! [`View`] to read one root, and [`Database::edit`] gives an [`Editor`] whose
-//! `commit` yields the new root. [`Reader`], [`Changeset`] and [`apply`] stay
+//! `commit` yields the new root. [`KeyLookup`], [`Changeset`] and [`apply`] stay
 //! as the layer the handle is built on.
 //!
 //! The folder view ([`View::dir`], [`View::serve`]) is a path
@@ -121,6 +121,7 @@ mod frontier;
 #[cfg(any(test, feature = "arbitrary"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
 pub mod generators;
+mod lookup;
 #[cfg(feature = "manifest")]
 #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
 pub mod manifest;
@@ -133,7 +134,6 @@ mod node;
 pub mod oracles;
 mod order;
 mod packing;
-mod reader;
 mod scan;
 mod store;
 mod traverse;
@@ -155,12 +155,12 @@ pub use error::{
 pub use folder::{DirEntry, FolderCursor, FolderServed, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
+pub use lookup::{KeyLookup, LookupError};
 #[cfg(feature = "manifest")]
 pub use manifest::LdbFormatError;
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, NodeRef, RootExtension};
 pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};
-pub use reader::{Reader, ReaderError};
 pub use scan::ScanCursor;
 pub use store::{NodeChunk, Plaintext, Seal, StoreError, load_node, save_node};
 pub use traverse::ScanAddressStream;

@@ -1,5 +1,5 @@
 //! Ordered read operations over the trie: full iteration, bounded scans, and
-//! floor lookup, all as O(depth) descent on top of the streaming reader.
+//! floor lookup, all as O(depth) descent on top of the key lookup.
 //!
 //! Iteration walks the fork tables along the frontier only: a value rides in
 //! its fork record, so a key and its value surface without fetching the chunk
@@ -31,8 +31,8 @@ use nectar_tasks::BoxFuture;
 use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};
 use crate::frontier::{Completion, Frame, Plan, claim, fill};
+use crate::lookup::{KeyLookup, LookupError};
 use crate::node::{Node, NodeRef};
-use crate::reader::{Reader, ReaderError};
 use crate::store::load_node;
 use crate::value::{Entry, Key};
 
@@ -74,11 +74,11 @@ type Fetched<F, R> = Completion<Vec<Step<F, R>>>;
 
 /// One delivered turn of the walk: a key-value pair, the end of the walk, or
 /// a non-terminal fault.
-type Turn<F> = Result<Option<(Key, Entry<F>)>, ReaderError>;
+type Turn<F> = Result<Option<(Key, Entry<F>)>, LookupError>;
 
 /// One polled step of a bounded walk: the emitted pair, the end of the walk,
 /// or a non-terminal fault.
-type StepOutcome<F> = Poll<Option<Result<(Key, Entry<F>), ReaderError>>>;
+type StepOutcome<F> = Poll<Option<Result<(Key, Entry<F>), LookupError>>>;
 
 /// An ordered cursor over a manifest, yielding `(key, value)` in key order.
 ///
@@ -172,7 +172,7 @@ where
                             load_node::<_, F, R>(store, &reference)
                                 .await
                                 .map(|node| flatten(&node, false))
-                                .map_err(ReaderError::from)
+                                .map_err(LookupError::from)
                         })
                     }
                 }
@@ -276,7 +276,7 @@ where
         root: &R,
         start: &[u8],
         end: Option<Bytes>,
-    ) -> Result<Self, ReaderError> {
+    ) -> Result<Self, LookupError> {
         let mut stack: Vec<Frame<F, R>> = Vec::new();
         let mut base: Vec<u8> = Vec::new();
         let mut reference = root.clone();
@@ -363,7 +363,7 @@ where
     }
 
     /// The next `(key, value)` in key order, or `None` at the end of the walk.
-    pub async fn next(&mut self) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
+    pub async fn next(&mut self) -> Result<Option<(Key, Entry<F>)>, LookupError> {
         poll_fn(|cx| self.poll_step(cx)).await.transpose()
     }
 
@@ -401,21 +401,21 @@ where
     F: Format,
     R: NodeRef + Unpin,
 {
-    type Item = Result<(Key, Entry<F>), ReaderError>;
+    type Item = Result<(Key, Entry<F>), LookupError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.get_mut().poll_step(cx)
     }
 }
 
-impl<S, F, R> Reader<S, F, R>
+impl<S, F, R> KeyLookup<S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
     /// Every `(key, value)` in ascending key order.
-    pub async fn iter(&self, root: &R) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
+    pub async fn iter(&self, root: &R) -> Result<ScanCursor<'_, S, F, R>, LookupError> {
         ScanCursor::seek(self.store(), root, &[], None).await
     }
 
@@ -425,7 +425,7 @@ where
         &self,
         root: &R,
         bounds: impl RangeBounds<Key>,
-    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, LookupError> {
         let (start, end) = half_open(&bounds);
         ScanCursor::seek(self.store(), root, &start, end).await
     }
@@ -438,7 +438,7 @@ where
         &self,
         root: &R,
         prefix: &Key,
-    ) -> Result<ScanCursor<'_, S, F, R>, ReaderError> {
+    ) -> Result<ScanCursor<'_, S, F, R>, LookupError> {
         let end = successor(prefix.as_bytes());
         ScanCursor::seek(self.store(), root, prefix.as_bytes(), end).await
     }
@@ -449,7 +449,7 @@ where
     /// Follows the target down the trie and, where the path dead-ends, takes the
     /// rightmost key of the largest branch left of it, so the cost stays
     /// O(depth) rather than a scan of the level.
-    pub async fn floor(&self, root: &R, key: &Key) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
+    pub async fn floor(&self, root: &R, key: &Key) -> Result<Option<(Key, Entry<F>)>, LookupError> {
         let store = self.store();
         let target = key.as_bytes();
         let mut base: Vec<u8> = Vec::new();
@@ -516,7 +516,7 @@ async fn max_key<S, F, R>(
     store: &S,
     base: Bytes,
     step: Step<F, R>,
-) -> Result<Option<(Key, Entry<F>)>, ReaderError>
+) -> Result<Option<(Key, Entry<F>)>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -541,7 +541,7 @@ async fn rightmost<S, F, R>(
     store: &S,
     mut path: Vec<u8>,
     mut reference: R,
-) -> Result<Option<(Key, Entry<F>)>, ReaderError>
+) -> Result<Option<(Key, Entry<F>)>, LookupError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -721,7 +721,7 @@ mod tests {
     fn iteration_is_ascending_across_embedded_and_referenced_children() {
         let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got = drain(run(reader.iter(&root)).unwrap());
         assert_eq!(
             got,
@@ -740,7 +740,7 @@ mod tests {
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
         let root = run(save_node(&store, &Node::new(root_ext, forks), &Plaintext)).unwrap();
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got = drain(run(reader.iter(&root)).unwrap());
         assert_eq!(got, vec![(Vec::new(), entry(9)), (b"k".to_vec(), entry(1))]);
     }
@@ -749,7 +749,7 @@ mod tests {
     fn range_is_half_open() {
         let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got = drain(
             run(reader.range(&root, &Key::from(&b"aa"[..])..&Key::from(&b"ba"[..]))).unwrap(),
         );
@@ -764,7 +764,7 @@ mod tests {
     fn range_starting_between_keys_seeks_to_the_ceiling() {
         let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got =
             drain(run(reader.range(&root, &Key::from(&b"ac"[..])..&Key::from(&b"z"[..]))).unwrap());
         assert_eq!(got, vec![(b"ba".to_vec(), entry(0xBA))]);
@@ -774,7 +774,7 @@ mod tests {
     fn prefix_selects_one_subtree() {
         let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let got = drain(run(reader.prefix(&root, &Key::from(&b"a"[..]))).unwrap());
         assert_eq!(
             got,
@@ -786,7 +786,7 @@ mod tests {
     fn floor_resolves_present_absent_and_below_all_keys() {
         let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         // Exact hit.
         assert_eq!(
             run(reader.floor(&root, &Key::from(&b"ab"[..]))).unwrap(),
@@ -831,7 +831,7 @@ mod tests {
             .root()
             .clone();
 
-        let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+        let reader = KeyLookup::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
         let mut cursor = run(reader.iter(&root)).unwrap();
         let mut got = Vec::new();
         while let Some((key, value)) = run(cursor.next()).unwrap() {
@@ -915,7 +915,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let (root, _) = with_ref(&store);
         let slow = SlowStore { inner: store };
-        let reader: Reader<_> = Reader::new(&slow);
+        let reader: KeyLookup<_> = KeyLookup::new(&slow);
         run(async {
             let mut cursor = reader.iter(&root).await.unwrap();
             assert_eq!(
@@ -972,7 +972,7 @@ mod tests {
             deny: *leaf.address(),
             failures: std::sync::Mutex::new(1),
         };
-        let reader: Reader<_> = Reader::new(&flaky);
+        let reader: KeyLookup<_> = KeyLookup::new(&flaky);
         run(async {
             let mut cursor = reader.iter(&root).await.unwrap();
             assert_eq!(
@@ -982,7 +982,7 @@ mod tests {
             // The leaf fetch fails once; the step stays unconsumed.
             assert!(matches!(
                 cursor.next().await.unwrap_err(),
-                ReaderError::Store(_)
+                LookupError::Store(_)
             ));
             // The retry replays the descent and reads the leaf.
             assert_eq!(

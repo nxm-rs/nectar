@@ -14,7 +14,9 @@
 )]
 
 use anyhow::{Result, ensure};
-use nectar_ldb::{Builder, Changeset, Encrypted, Entry, Key, Node, Plaintext, Reader, V1, apply};
+use nectar_ldb::{
+    Builder, Changeset, Encrypted, Entry, Key, KeyLookup, Node, Plaintext, V1, apply,
+};
 use nectar_primitives::store::ChunkGet;
 use nectar_primitives::{
     ChunkAddress, ChunkOps, ChunkRef, ContentGet, EncryptedChunkRef, MemoryStore,
@@ -111,7 +113,7 @@ fn every_stored_chunk_is_opaque_to_a_plaintext_reader() -> Result<()> {
 fn build_then_read_round_trips_every_key() -> Result<()> {
     let rows = keys();
     let (store, root) = build_encrypted(&rows)?;
-    let reader = Reader::<_, V1, EncryptedChunkRef>::new(ContentGet::new(store));
+    let reader = KeyLookup::<_, V1, EncryptedChunkRef>::new(ContentGet::new(store));
     run(async {
         for (key, fill) in &rows {
             ensure!(
@@ -135,8 +137,8 @@ fn a_scan_yields_the_same_order_as_the_plaintext_twin() -> Result<()> {
     let plain_store = MemoryStore::default();
     let plain_root = *run(builder_over(&rows).build(&plain_store, &Plaintext))?.root();
 
-    let reader = Reader::<_, V1, EncryptedChunkRef>::new(ContentGet::new(store));
-    let plain_reader = Reader::<_, V1>::new(ContentGet::new(plain_store));
+    let reader = KeyLookup::<_, V1, EncryptedChunkRef>::new(ContentGet::new(store));
+    let plain_reader = KeyLookup::<_, V1>::new(ContentGet::new(plain_store));
     run(async {
         let mut cursor = reader.iter(&root).await?;
         let mut plain_cursor = plain_reader.iter(&plain_root).await?;
@@ -171,7 +173,7 @@ fn the_traversal_names_every_stored_chunk() -> Result<()> {
     let stored: std::collections::HashSet<ChunkAddress> =
         store.clone().into_chunks().into_keys().collect();
 
-    let reader = Reader::<_, V1, EncryptedChunkRef>::new(ContentGet::new(store));
+    let reader = KeyLookup::<_, V1, EncryptedChunkRef>::new(ContentGet::new(store));
     let streamed = run(async {
         let mut stream = reader.addresses(&root);
         let mut out = std::collections::HashSet::new();
@@ -228,7 +230,7 @@ fn apply_matches_a_from_scratch_encrypted_build() -> Result<()> {
     );
 
     // The updated database still reads back through the new capability.
-    let reader = Reader::<_, V1, EncryptedChunkRef>::new(ContentGet::new(store));
+    let reader = KeyLookup::<_, V1, EncryptedChunkRef>::new(ContentGet::new(store));
     run(async {
         for (key, fill) in &all {
             ensure!(
@@ -251,7 +253,7 @@ fn a_mis_typed_reader_cannot_open_an_encrypted_database() -> Result<()> {
         run(ChunkGet::get(&content, root.address())).is_ok(),
         "the root chunk must be stored",
     );
-    let plain_reader = Reader::<_, V1>::new(content);
+    let plain_reader = KeyLookup::<_, V1>::new(content);
     ensure!(
         run(plain_reader.get(&ChunkRef::new(*root.address()), &Key::from(&[0u8, 0][..]))).is_err(),
         "a plaintext-typed reader must fail loud on an encrypted database",

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use arbitrary::Unstructured;
 use bytes::Bytes;
-use nectar_ldb::{Builder, Entry, Format, Key, Plaintext, Reader, ScanCursor, V1, generators};
+use nectar_ldb::{Builder, Entry, Format, Key, KeyLookup, Plaintext, ScanCursor, V1, generators};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
@@ -108,7 +108,7 @@ fn iteration_fetches_nodes_not_values() -> Result<()> {
         inner: ContentGet::new(memory),
         gets: AtomicUsize::new(0),
     };
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: KeyLookup<_> = KeyLookup::new(&store);
 
     let got = collect(run(reader.iter(&root))?)?;
     let expected: Rows = oracle.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -129,7 +129,7 @@ fn range_matches_the_oracle() -> Result<()> {
         inner: ContentGet::new(store),
         gets: AtomicUsize::new(0),
     };
-    let reader: Reader<_> = Reader::new(&counting);
+    let reader: KeyLookup<_> = KeyLookup::new(&counting);
 
     for (lo, hi) in [
         (&b"dir03"[..], &b"dir07"[..]),
@@ -152,7 +152,7 @@ fn range_matches_the_oracle() -> Result<()> {
 fn prefix_matches_the_oracle() -> Result<()> {
     let store = MemoryStore::default();
     let (root, oracle) = build(&store)?;
-    let reader: Reader<_> = Reader::new(ContentGet::new(&store));
+    let reader: KeyLookup<_> = KeyLookup::new(ContentGet::new(&store));
 
     run(async {
         for p in [
@@ -265,7 +265,7 @@ fn read_ahead_bounds_in_flight_and_matches_the_oracle() -> Result<()> {
         inner: ContentGet::new(memory),
         ..Default::default()
     };
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: KeyLookup<_> = KeyLookup::new(&store);
 
     let got: Rows = {
         let mut cursor = run(reader.iter(&root))?;
@@ -323,7 +323,7 @@ proptest! {
         }
         let built = run(builder.build(&store, &Plaintext))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
-        let reader: Reader<_> = Reader::new(ContentGet::new(&store));
+        let reader: KeyLookup<_> = KeyLookup::new(ContentGet::new(&store));
         let got: Rows = {
             let mut cursor = run(reader.iter(built.root()))
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;
@@ -376,7 +376,7 @@ proptest! {
         }
         let built = run(builder.build(&store, &Plaintext))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
-        let reader: Reader<_> = Reader::new(ContentGet::new(&store));
+        let reader: KeyLookup<_> = KeyLookup::new(ContentGet::new(&store));
         let got: Rows = {
             let mut cursor = run(reader.iter(built.root()))
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;
@@ -419,7 +419,7 @@ fn read_ahead_never_fetches_past_the_upper_bound() -> Result<()> {
         inner: ContentGet::new(memory),
         ..Default::default()
     };
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: KeyLookup<_> = KeyLookup::new(&store);
 
     // A range over the single leading byte 0x00: its subtree is in range; every
     // sibling at 0x01.. is at or past the exclusive bound. Read-ahead must stop
@@ -460,7 +460,7 @@ fn read_ahead_never_fetches_past_the_upper_bound() -> Result<()> {
 fn floor_matches_the_oracle() -> Result<()> {
     let store = MemoryStore::default();
     let (root, oracle) = build(&store)?;
-    let reader: Reader<_> = Reader::new(ContentGet::new(&store));
+    let reader: KeyLookup<_> = KeyLookup::new(ContentGet::new(&store));
 
     run(async {
         for target in [

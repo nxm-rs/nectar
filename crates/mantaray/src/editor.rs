@@ -917,7 +917,7 @@ mod tests {
     fn committed_root_is_readable() {
         let script = corpora().swap_remove(4);
         let (root, loadsaver) = editor_replay(&script);
-        let reader = crate::Reader::new(loadsaver);
+        let reader = crate::TrieLookup::new(loadsaver);
         let entry = run(reader.get(root, b"img/1.png")).unwrap().unwrap();
         assert_eq!(
             entry.reference().map(|r| *r.address()),
@@ -934,7 +934,7 @@ mod tests {
         editor.insert("//", make_addr("s"));
         editor.set_index_document("doc");
         let (root, loadsaver) = run(editor.commit()).unwrap();
-        let entry = run(crate::Reader::new(loadsaver).get(root, b"/"))
+        let entry = run(crate::TrieLookup::new(loadsaver).get(root, b"/"))
             .unwrap()
             .expect("metadata-carrying edge reads back");
         assert!(entry.reference().is_none());
@@ -1002,7 +1002,7 @@ mod tests {
         let mut editor = Editor::open(root, loadsaver);
         editor.remove("a");
         let (pruned, loadsaver) = run(editor.commit()).unwrap();
-        let reader = crate::Reader::new(loadsaver);
+        let reader = crate::TrieLookup::new(loadsaver);
         assert!(run(reader.get(pruned, b"a")).unwrap().is_none());
         assert!(run(reader.get(pruned, b"ab")).unwrap().is_some());
         assert!(run(reader.get(pruned, b"ac")).unwrap().is_some());
@@ -1031,7 +1031,7 @@ mod tests {
         editor.remove("alpine");
         let (emptied, loadsaver) = run(editor.commit()).unwrap();
 
-        let reader = crate::Reader::new(loadsaver);
+        let reader = crate::TrieLookup::new(loadsaver);
         assert!(run(reader.get(emptied, b"alpine")).unwrap().is_none());
         assert!(run(reader.get(emptied, b"alpha")).unwrap().is_some());
         assert!(run(reader.get(emptied, b"beta")).unwrap().is_some());
@@ -1050,7 +1050,7 @@ mod tests {
         editor.remove(TWO);
         let (emptied, loadsaver) = run(editor.commit()).unwrap();
 
-        let reader = crate::Reader::new(loadsaver);
+        let reader = crate::TrieLookup::new(loadsaver);
         assert!(run(reader.get(emptied, TWO.as_bytes())).unwrap().is_none());
         assert!(run(reader.get(emptied, ONE.as_bytes())).unwrap().is_some());
     }
@@ -1066,7 +1066,7 @@ mod tests {
         let mut editor = Editor::open(root, loadsaver);
         editor.remove_subtree("a");
         let (pruned, loadsaver) = run(editor.commit()).unwrap();
-        let reader = crate::Reader::new(loadsaver);
+        let reader = crate::TrieLookup::new(loadsaver);
         for path in [&b"a"[..], &b"ab"[..], &b"ac"[..]] {
             assert!(run(reader.get(pruned, path)).unwrap().is_none());
         }
@@ -1092,7 +1092,7 @@ mod tests {
         let (got, loadsaver) = run(editor.commit()).unwrap();
         assert_eq!(got, want);
 
-        let reader = crate::Reader::new(loadsaver);
+        let reader = crate::TrieLookup::new(loadsaver);
         let entry = run(reader.get(got, b"/")).unwrap().unwrap();
         assert_eq!(
             entry.metadata().get("website-index-document").cloned(),
@@ -1117,7 +1117,7 @@ mod tests {
         let (got, loadsaver) = run(editor.commit()).unwrap();
         assert_eq!(got, want, "the add after a no-op removal was dropped");
 
-        let reader = crate::Reader::new(loadsaver);
+        let reader = crate::TrieLookup::new(loadsaver);
         assert!(run(reader.get(got, b"b/c")).unwrap().is_some());
         assert!(run(reader.get(got, b"a")).unwrap().is_some());
     }

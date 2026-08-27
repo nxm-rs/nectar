@@ -24,7 +24,7 @@
 use alloy_primitives::{B256, Signature, address, b256, hex};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
-use nectar_feeds::{Feed, Reader, Sequence, Topic};
+use nectar_feeds::{Feed, FeedView, Sequence, Topic};
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps, SingleOwnerOnlyChunkSet, SocId};
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{Chunk, DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultSingleOwnerChunk};
@@ -165,7 +165,7 @@ fn reader_reads_reference_vector() {
     let store =
         MemoryStore::<SingleOwnerOnlyChunkSet>::from_chunks([Chunk::from_envelope(soc).unwrap()]);
 
-    let update = nectar_testing::run(Reader::new(feed, &store).at(Sequence::ZERO)).unwrap();
+    let update = nectar_testing::run(FeedView::new(feed, &store).at(Sequence::ZERO)).unwrap();
     assert_eq!(update.payload().as_ref(), b"data");
     assert_eq!(
         update.address().as_ref(),

@@ -1,4 +1,4 @@
-//! The streaming reader through the public API: descent follows one fork per
+//! The key lookup through the public API: descent follows one fork per
 //! node, so a lookup down a wide manifest fetches O(depth) nodes and never a
 //! whole level. A counting store witnesses the bound directly.
 
@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_ldb::{
-    Builder, Child, Database, Entry, ForkTable, Key, KeyId, Metadata, Node, Plaintext, Prefix,
-    Reader, V1, save_node,
+    Builder, Child, Database, Entry, ForkTable, Key, KeyId, KeyLookup, Metadata, Node, Plaintext,
+    Prefix, V1, save_node,
 };
 use nectar_manifest::{Batch, Manifest, ManifestPath, ManifestView};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
@@ -81,7 +81,7 @@ fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> Result<()> {
         inner: ContentGet::new(memory),
         gets: AtomicUsize::new(0),
     };
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: KeyLookup<_> = KeyLookup::new(&store);
 
     // Look up one key: first byte 0x2A, then the leaf's 0xFF fork.
     let key = Key::from(&[0x2Au8, 0xFF][..]);
@@ -149,7 +149,7 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
         inner: ContentGet::new(memory),
         gets: AtomicUsize::new(0),
     };
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: KeyLookup<_> = KeyLookup::new(&store);
 
     // The root extension answers the empty key.
     ensure!(
@@ -209,7 +209,7 @@ fn an_absent_key_stops_at_the_first_unmatched_fork() -> Result<()> {
         inner: ContentGet::new(memory),
         gets: AtomicUsize::new(0),
     };
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: KeyLookup<_> = KeyLookup::new(&store);
 
     // A first byte no root fork carries: the walk stops at the root without
     // fetching any leaf.
@@ -240,7 +240,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
     let root = *run(builder.build(&store, &Plaintext))?.root();
 
     run(async {
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: KeyLookup<_> = KeyLookup::new(&store);
         let site = reader.website(&root).await?;
         ensure!(site.index() == Some(&b"index.html"[..]), "index document");
         ensure!(site.error() == Some(&b"404.html"[..]), "error document");

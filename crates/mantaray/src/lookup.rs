@@ -1,4 +1,4 @@
-//! Depth-guarded path reader over persisted mantaray tries.
+//! Depth-guarded path lookup over persisted mantaray tries.
 //!
 //! Each lookup descends from a root reference one [`NodeView`] per hop,
 //! loading only the nodes on the path, so it costs O(depth) node loads under
@@ -12,7 +12,7 @@ use nectar_manifest::NodeLoader;
 use nectar_primitives::EntryRef;
 
 use crate::entry::Entry;
-use crate::error::ReaderError;
+use crate::error::LookupError;
 use crate::node::NodeType;
 use crate::view::NodeView;
 
@@ -22,24 +22,24 @@ use crate::view::NodeView;
 /// at least one path byte, so this covers any path up to 255 bytes.
 pub const DEFAULT_MAX_DEPTH: usize = 256;
 
-/// Depth-guarded reader over a node loader.
+/// Depth-guarded lookup over a node loader.
 ///
 /// Stateless between calls: each lookup starts from the root reference it is
 /// given, so one reader serves any number of tries behind the same loader.
 #[derive(Clone, Copy, Debug)]
-pub struct Reader<L> {
+pub struct TrieLookup<L> {
     store: L,
     max_depth: usize,
 }
 
-impl<L> Reader<L> {
-    /// Reader with the [`DEFAULT_MAX_DEPTH`] fetch budget.
+impl<L> TrieLookup<L> {
+    /// TrieLookup with the [`DEFAULT_MAX_DEPTH`] fetch budget.
     #[must_use]
     pub const fn new(store: L) -> Self {
         Self::with_max_depth(store, DEFAULT_MAX_DEPTH)
     }
 
-    /// Reader with an explicit per-lookup fetch budget.
+    /// TrieLookup with an explicit per-lookup fetch budget.
     #[must_use]
     pub const fn with_max_depth(store: L, max_depth: usize) -> Self {
         Self { store, max_depth }
@@ -64,7 +64,7 @@ impl<L> Reader<L> {
     }
 }
 
-impl<L: NodeLoader<Vec<u8>>> Reader<L> {
+impl<L: NodeLoader<Vec<u8>>> TrieLookup<L> {
     /// The entry at `path` under the trie rooted at `root`, or `None` when
     /// the path is absent or names a bare edge. A metadata-carrying edge
     /// (the root documents node) reads back as an entry with no reference.
@@ -76,7 +76,7 @@ impl<L: NodeLoader<Vec<u8>>> Reader<L> {
         &self,
         root: impl Into<EntryRef>,
         path: &[u8],
-    ) -> Result<Option<Entry>, ReaderError> {
+    ) -> Result<Option<Entry>, LookupError> {
         let mut budget = self.max_depth;
         let mut view = self.fetch(&mut budget, &root.into()).await?;
         let mut rest = path;
@@ -127,7 +127,7 @@ impl<L: NodeLoader<Vec<u8>>> Reader<L> {
         &self,
         root: impl Into<EntryRef>,
         prefix: &[u8],
-    ) -> Result<bool, ReaderError> {
+    ) -> Result<bool, LookupError> {
         if prefix.is_empty() {
             return Ok(true);
         }
@@ -160,8 +160,8 @@ impl<L: NodeLoader<Vec<u8>>> Reader<L> {
         &self,
         budget: &mut usize,
         reference: &EntryRef,
-    ) -> Result<NodeView, ReaderError> {
-        *budget = budget.checked_sub(1).ok_or(ReaderError::MaxDepth {
+    ) -> Result<NodeView, LookupError> {
+        *budget = budget.checked_sub(1).ok_or(LookupError::MaxDepth {
             max_depth: self.max_depth,
         })?;
         let address = *reference.address();
@@ -169,12 +169,12 @@ impl<L: NodeLoader<Vec<u8>>> Reader<L> {
             .store
             .load(reference)
             .await
-            .map_err(|e| ReaderError::Store {
+            .map_err(|e| LookupError::Store {
                 address,
                 source: Arc::new(e),
             })?;
         NodeView::try_from(bytes.as_slice())
-            .map_err(|source| ReaderError::Corrupt { address, source })
+            .map_err(|source| LookupError::Corrupt { address, source })
     }
 }
 
@@ -255,7 +255,7 @@ mod tests {
     /// paths, a prefix probe hits exactly the stored extensions.
     async fn assert_model(paths: &[&str]) {
         let (root, loadsaver) = build(paths).await;
-        let reader = Reader::new(loadsaver);
+        let reader = TrieLookup::new(loadsaver);
         for probe in probes(paths) {
             let got = reader.get(root, probe.as_bytes()).await.unwrap();
             assert_eq!(
@@ -297,7 +297,7 @@ mod tests {
             }
             let (root, loadsaver) = editor.commit().await.unwrap();
 
-            let reader = Reader::new(loadsaver);
+            let reader = TrieLookup::new(loadsaver);
             for p in paths {
                 let got = reader
                     .get(root.clone(), p.as_bytes())
@@ -329,7 +329,7 @@ mod tests {
         editor.set_index_document("index.html");
         let (root, loadsaver) = run(editor.commit()).unwrap();
 
-        let reader = Reader::new(loadsaver);
+        let reader = TrieLookup::new(loadsaver);
         let plain = run(reader.get(root, b"plain.txt")).unwrap().unwrap();
         assert_eq!(
             plain.reference().map(|r| *r.address()),
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn fetch_costs_are_depth_bounded() {
         let (root, loadsaver) = run(build(&["abc"]));
-        let reader = Reader::new(CountingStore::new(loadsaver));
+        let reader = TrieLookup::new(CountingStore::new(loadsaver));
 
         // Value hit: root plus the terminal node.
         assert!(run(reader.get(root, b"abc")).unwrap().is_some());
@@ -401,7 +401,7 @@ mod tests {
     fn fetch_costs_stay_linear_in_path_length() {
         let paths = ["a", "ab", "abc", "abcd", "abcde"];
         let (root, loadsaver) = run(build(&paths));
-        let reader = Reader::new(CountingStore::new(loadsaver));
+        let reader = TrieLookup::new(CountingStore::new(loadsaver));
 
         run(async {
             for p in paths {
@@ -424,29 +424,29 @@ mod tests {
         // One-byte edge chain: get("abcde") costs 6 fetches, has_prefix 5.
         let (root, loadsaver) = run(build(&["a", "ab", "abc", "abcd", "abcde"]));
 
-        let exact = Reader::with_max_depth(loadsaver, 6);
+        let exact = TrieLookup::with_max_depth(loadsaver, 6);
         assert!(run(exact.get(root, b"abcde")).unwrap().is_some());
         assert!(run(exact.has_prefix(root, b"abcde")).unwrap());
 
-        let short = Reader::with_max_depth(exact.into_store(), 5);
+        let short = TrieLookup::with_max_depth(exact.into_store(), 5);
         assert!(matches!(
             run(short.get(root, b"abcde")),
-            Err(ReaderError::MaxDepth { max_depth: 5 })
+            Err(LookupError::MaxDepth { max_depth: 5 })
         ));
         assert!(run(short.has_prefix(root, b"abcde")).unwrap());
 
-        let shorter = Reader::with_max_depth(short.into_store(), 4);
+        let shorter = TrieLookup::with_max_depth(short.into_store(), 4);
         assert!(matches!(
             run(shorter.has_prefix(root, b"abcde")),
-            Err(ReaderError::MaxDepth { max_depth: 4 })
+            Err(LookupError::MaxDepth { max_depth: 4 })
         ));
 
         // A zero budget rejects even the root fetch, but the empty prefix
         // needs none.
-        let zero = Reader::with_max_depth(shorter.into_store(), 0);
+        let zero = TrieLookup::with_max_depth(shorter.into_store(), 0);
         assert!(matches!(
             run(zero.get(root, b"")),
-            Err(ReaderError::MaxDepth { max_depth: 0 })
+            Err(LookupError::MaxDepth { max_depth: 0 })
         ));
         assert!(run(zero.has_prefix(root, b"")).unwrap());
     }
@@ -454,21 +454,21 @@ mod tests {
     #[test]
     fn empty_path_is_not_a_value() {
         let (root, loadsaver) = run(build(&["a"]));
-        let reader = Reader::new(loadsaver);
+        let reader = TrieLookup::new(loadsaver);
         assert_eq!(run(reader.get(root, b"")).unwrap(), None);
     }
 
     #[test]
     fn missing_root_is_a_store_error() {
-        let reader: Reader<LoadSaver> = Reader::new(LoadSaver::new(Store::new()));
+        let reader: TrieLookup<LoadSaver> = TrieLookup::new(LoadSaver::new(Store::new()));
         let root = make_addr("nowhere");
         assert!(matches!(
             run(reader.get(root, b"x")),
-            Err(ReaderError::Store { address, .. }) if address == root
+            Err(LookupError::Store { address, .. }) if address == root
         ));
         assert!(matches!(
             run(reader.has_prefix(root, b"x")),
-            Err(ReaderError::Store { address, .. }) if address == root
+            Err(LookupError::Store { address, .. }) if address == root
         ));
     }
 
@@ -483,10 +483,10 @@ mod tests {
         let sealed: Chunk = Chunk::from_envelope(chunk.into()).unwrap();
         run(store.put(sealed)).unwrap();
 
-        let reader = Reader::new(LoadSaver::new(store));
+        let reader = TrieLookup::new(LoadSaver::new(store));
         assert!(matches!(
             run(reader.get(root, b"x")),
-            Err(ReaderError::Corrupt { address, .. }) if address == root
+            Err(LookupError::Corrupt { address, .. }) if address == root
         ));
     }
 }
