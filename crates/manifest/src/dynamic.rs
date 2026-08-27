@@ -14,58 +14,34 @@ use core::ops::ControlFlow;
 use futures_util::StreamExt;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::ChunkRef;
-use nectar_primitives::sink::DataSink;
-use nectar_primitives::store::BoxedError;
+use nectar_primitives::store::WriteAt;
 use nectar_tasks::BoxFuture;
 
+use crate::Manifest;
 use crate::batch::Batch;
-use crate::error::{ErasedFormat, ErasedManifestError, ManifestError};
+use crate::error::{CollectError, ErasedFormat, ErasedManifestError, ManifestError};
 use crate::listing::Listing;
 use crate::meta::{ManifestMeta, MetadataSource};
 use crate::op::ManifestOp;
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
 use crate::view::{ManifestView, MapEntry};
-use crate::{Manifest, SinkError};
-
-/// A sink write that failed behind the erased seam; the concrete error
-/// survives as the source.
-#[derive(Debug, thiserror::Error)]
-#[error("erased sink write failed")]
-pub struct DynSinkError(#[source] BoxedError);
-
-/// Object-safe [`DataSink`]: the same positional, idempotent write with the
-/// error boxed.
-///
-/// Blanket-implemented, so any sink is usable through the erased seam.
-pub trait DynSink: MaybeSend {
-    /// Write `data` at absolute byte `offset`, growing the sink as needed.
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), DynSinkError>;
-}
-
-impl<K: DataSink<Error: SinkError> + MaybeSend> DynSink for K {
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), DynSinkError> {
-        DataSink::write_at(self, offset, data).map_err(|source| DynSinkError(Box::new(source)))
-    }
-}
-
-/// An erased sink borrowed back into the static [`DataSink`] the format's own
-/// load expects.
-struct SinkBridge<'a>(&'a mut dyn DynSink);
-
-impl DataSink for SinkBridge<'_> {
-    type Error = DynSinkError;
-
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::Error> {
-        self.0.write_at(offset, data)
-    }
-}
 
 /// A typed seam failure with its format union boxed.
 fn erase<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
     error: ManifestError<F>,
 ) -> ErasedManifestError {
     error.map_format(|format| ErasedFormat(Box::new(format)))
+}
+
+/// An in-memory load failure with its format union boxed.
+fn erase_collect<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
+    error: CollectError<ManifestError<F>>,
+) -> CollectError<ErasedManifestError> {
+    match error {
+        CollectError::TooLarge { exceeds, max } => CollectError::TooLarge { exceeds, max },
+        CollectError::Load(error) => CollectError::Load(erase(error)),
+    }
 }
 
 /// Object-safe visitor for [`ErasedManifest::dyn_for_each`]:
@@ -127,13 +103,22 @@ pub trait ErasedManifest: MaybeSend + MaybeSync {
         visit: &'a mut dyn DynVisit,
     ) -> BoxFuture<'a, Result<(), ErasedManifestError>>;
 
-    /// Write the data bound to `path` into `sink`, starting at offset zero.
+    /// Write the data bound to `path` into `sink`, starting at offset zero,
+    /// and report the bytes written.
     fn dyn_load<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-        sink: &'a mut dyn DynSink,
-    ) -> BoxFuture<'a, Result<(), ErasedManifestError>>;
+        sink: &'a mut (dyn WriteAt + 'a),
+    ) -> BoxFuture<'a, Result<u64, ErasedManifestError>>;
+
+    /// Assemble the data bound to `path` in memory, at most `max` bytes.
+    fn dyn_collect<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        path: &'a ManifestPath,
+        max: u64,
+    ) -> BoxFuture<'a, Result<Vec<u8>, CollectError<ErasedManifestError>>>;
 
     /// The site-level documents the manifest declares, each absent as `None`.
     fn dyn_site_config<'a>(
@@ -243,11 +228,22 @@ where
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-        sink: &'a mut dyn DynSink,
-    ) -> BoxFuture<'a, Result<(), ErasedManifestError>> {
+        sink: &'a mut (dyn WriteAt + 'a),
+    ) -> BoxFuture<'a, Result<u64, ErasedManifestError>> {
+        Box::pin(async move { self.at(*root).load(path, sink).await.map_err(erase) })
+    }
+
+    fn dyn_collect<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        path: &'a ManifestPath,
+        max: u64,
+    ) -> BoxFuture<'a, Result<Vec<u8>, CollectError<ErasedManifestError>>> {
         Box::pin(async move {
-            let mut bridge = SinkBridge(sink);
-            self.at(*root).load(path, &mut bridge).await.map_err(erase)
+            self.at(*root)
+                .collect(path, max)
+                .await
+                .map_err(erase_collect)
         })
     }
 

@@ -13,10 +13,12 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
+use core::marker::Unpin;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use futures_util::FutureExt;
+use futures_util::sink::Sink;
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_clock::Clock;
 use nectar_governor::Admission;
@@ -154,37 +156,57 @@ where
     /// frees or [`resume`](Self::resume) runs, and the same address must be
     /// offered again.
     pub fn poll_admit(&mut self, cx: &mut Context<'_>, address: ChunkAddress) -> Poll<()> {
+        match self.poll_admisible(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(()) => {
+                self.admit_one(address);
+                Poll::Ready(())
+            }
+        }
+    }
+
+    /// Secures capacity for one more digest without one.
+    ///
+    /// `Pending` when the window is full with nothing completable, or
+    /// admission is paused; the waker fires when a slot frees or
+    /// [`resume`](Self::resume) runs. `Ready` also after fail-fast: the
+    /// refusal then completes at [`admit_one`](Self::admit_one).
+    fn poll_admisible(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if self.paused {
             self.admit_waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
         loop {
             if self.failed {
-                self.ready.push_back(StampResult {
-                    address,
-                    result: Err(SigningError::NotAdmitted),
-                });
                 return Poll::Ready(());
             }
             if self.admits() {
-                self.admit_batch(&[address]);
                 return Poll::Ready(());
             }
             match self.harvest(cx) {
                 Poll::Ready(Some(())) => {}
-                // A drained set holds no token, so this cannot happen; refuse
-                // rather than spin if it ever does.
+                // A drained set holds no token, so this cannot happen; the
+                // refusal then lands at `try_acquire` rather than spinning.
                 Poll::Ready(None) => {
                     debug_assert!(self.admits(), "an admission token outlived its job");
-                    self.ready.push_back(StampResult {
-                        address,
-                        result: Err(SigningError::NotAdmitted),
-                    });
                     return Poll::Ready(());
                 }
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+
+    /// Admits one address, queueing a refusal instead once fail-fast has
+    /// stopped admission or the window is full.
+    fn admit_one(&mut self, address: ChunkAddress) {
+        if self.failed {
+            self.ready.push_back(StampResult {
+                address,
+                result: Err(SigningError::NotAdmitted),
+            });
+            return;
+        }
+        self.admit_batch(&[address]);
     }
 
     /// Polls for the next completion.
@@ -300,6 +322,52 @@ where
             self.ready.push_back(result);
         }
         Poll::Ready(Some(()))
+    }
+}
+
+impl<Sg, C, I, S> Stream for StampSink<'_, Sg, C, I, S>
+where
+    Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
+    C: Clock,
+    I: StampIssuer + ?Sized,
+    S: Spawn + Unpin,
+{
+    type Item = StampResult;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().poll_next(cx)
+    }
+}
+
+impl<Sg, C, I, S> Sink<ChunkAddress> for StampSink<'_, Sg, C, I, S>
+where
+    Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
+    C: Clock,
+    I: StampIssuer + ?Sized,
+    S: Spawn + Unpin,
+{
+    type Error = ();
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.get_mut().poll_admisible(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(()) => Poll::Ready(Ok(())),
+        }
+    }
+
+    fn start_send(self: Pin<&mut Self>, address: ChunkAddress) -> Result<(), Self::Error> {
+        self.get_mut().admit_one(address);
+        Ok(())
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // The sign job is already running in the window; the `Stream`
+        // half drains its results.
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -977,5 +1045,33 @@ mod tests {
         // The whole batch still yielded, Ok siblings included.
         assert!(sink.is_failed());
         assert_eq!(issuer.stamps_issued(), Some(8));
+    }
+
+    /// The `futures` protocol drives the same window: `send_all` admits
+    /// every address and `next` drains every result.
+    #[test]
+    fn the_futures_protocol_admits_and_drains() {
+        use futures_util::SinkExt;
+        use futures_util::StreamExt;
+
+        nectar_testing::run(async {
+            let issuer = issuer24();
+            let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
+            let input = addresses(8);
+
+            let mut sink = pipeline.sink(&issuer, InlineSpawner);
+            let mut feed =
+                futures_util::stream::iter(input.clone()).map(Result::Ok::<ChunkAddress, ()>);
+            sink.send_all(&mut feed).await.expect("send_all");
+
+            let mut results = Vec::new();
+            while let Some(result) = sink.next().await {
+                results.push(result);
+            }
+
+            assert_eq!(results.len(), 8);
+            assert!(results.iter().all(|r| r.result.is_ok()));
+            assert_eq!(issuer.stamps_issued(), Some(8));
+        });
     }
 }

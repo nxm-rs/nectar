@@ -4,6 +4,8 @@
 //! Any node that maintains a batch store (for stamp validation) needs to handle
 //! these events to keep their batch state synchronized with on-chain state.
 
+use nectar_marker::{MaybeSend, MaybeSync};
+
 use crate::{Batch, BatchId};
 
 /// State changes to batches on-chain, as a node registry reacts to them.
@@ -70,7 +72,9 @@ impl BatchEvent {
 /// and update internal state accordingly.
 pub trait BatchEventHandler {
     /// The error type returned when handling fails.
-    type Error;
+    ///
+    /// The house error shape: structured and boxable across a seam boundary.
+    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// Handles a batch event.
     ///

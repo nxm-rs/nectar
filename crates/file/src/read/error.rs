@@ -3,6 +3,7 @@
 use alloc::collections::TryReserveError;
 
 use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::store::BoxedError;
 
 use crate::walk::{DecodeError, WalkError};
 
@@ -24,7 +25,7 @@ pub enum OpenError<E> {
 
 /// Terminal failure of one load run; a full re-run restarts it.
 #[derive(Debug, thiserror::Error)]
-pub enum LoadError<E, SE> {
+pub enum LoadError<E> {
     /// The root reference did not open as a file.
     #[error(transparent)]
     Open(#[from] OpenError<E>),
@@ -36,8 +37,8 @@ pub enum LoadError<E, SE> {
     Sink {
         /// Range-relative offset of the failed write.
         offset: u64,
-        /// Sink error behind the failure.
-        source: SE,
+        /// Seam error behind the failure.
+        source: BoxedError,
     },
 }
 

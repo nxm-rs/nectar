@@ -1173,8 +1173,11 @@ mod pooled {
 #[test]
 #[ignore = "nightly: streams more than 4 GiB"]
 fn huge_stream_root_matches_the_batch_ingest() {
+    use crate::ReadAt;
     use crate::handle::{File, Policy};
-    use crate::source::{ReadAt, ReadAtSource};
+    use crate::source::ReadAtSource;
+
+    use nectar_primitives::store::BoxedError;
 
     const B: usize = nectar_primitives::DEFAULT_BODY_SIZE;
     let size: u64 = (1u64 << 32) + (B as u64) + 17;
@@ -1185,7 +1188,7 @@ fn huge_stream_root_matches_the_batch_ingest() {
     }
 
     impl ReadAt for Pattern {
-        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
             let available = self.len.saturating_sub(offset);
             let take = buf.len().min(available as usize);
             for (i, slot) in buf[..take].iter_mut().enumerate() {
@@ -1194,8 +1197,8 @@ fn huge_stream_root_matches_the_batch_ingest() {
             Ok(take)
         }
 
-        fn len(&self) -> std::io::Result<u64> {
-            Ok(self.len)
+        fn size(&self) -> Option<u64> {
+            Some(self.len)
         }
     }
 

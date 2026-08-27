@@ -45,11 +45,10 @@
     )
 )]
 
-mod sink;
-
 // Events (std only)
 #[cfg(feature = "std")]
 mod events;
+mod transfer;
 
 // The data half, re-exported at its original paths.
 #[cfg(any(test, feature = "arbitrary"))]
@@ -65,7 +64,7 @@ pub use nectar_postage_primitives::{
     ValidationState, VerifyingKey, calculate_bucket,
 };
 
-pub use sink::StampIndifferent;
+pub use transfer::StampIndifferent;
 
 // Events (std only)
 #[cfg(feature = "std")]

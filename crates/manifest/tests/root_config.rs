@@ -5,7 +5,12 @@
 //! the key-value database alone: mantaray 0.2 keeps insert-order node
 //! placement, which the wire `mantaray/bee_vectors.rs` pins.
 
-#![allow(clippy::indexing_slicing, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unreachable,
+    clippy::unwrap_used
+)]
 
 use std::ops::Bound;
 use std::sync::Arc;
@@ -17,11 +22,11 @@ use nectar_ldb::{
 };
 use nectar_manifest::{
     Batch, ListEntry, Manifest, ManifestError, ManifestMeta, ManifestOp, ManifestPath,
-    ManifestView, MapEntry, MemSink, MetadataView, WellKnownKey,
+    ManifestView, MapEntry, MetadataView, WellKnownKey,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EncryptedChunkRef, EncryptionKey};
-use nectar_testing::run;
+use nectar_testing::{MemWriteAt, run};
 
 mod common;
 use common::{
@@ -69,7 +74,7 @@ where
         assert!(!bound, "{hint:?} is unbound");
         let meta = view.metadata(path).await.unwrap();
         assert_eq!(meta, M::Metadata::default(), "{hint:?} carries metadata");
-        let load = view.load(path, &mut MemSink::new()).await;
+        let load = view.load(path, &mut MemWriteAt::new()).await;
         assert!(load.is_err(), "{hint:?} names no data");
         let insert = manifest.insert(configured, path.clone(), nine).await;
         assert_eq!(refused(&insert), Some(path.clone()), "insert at {hint:?}");
@@ -474,7 +479,7 @@ async fn assert_empty_bootstrap<M: Manifest<ChunkRef>>(manifest: &M, native: Chu
     let view = manifest.at(empty);
     let first = view.iter().await.unwrap().next().await.transpose().unwrap();
     assert!(first.is_none(), "{f}: the empty manifest holds no path");
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     let missing = view.load(&p("missing.html"), &mut sink).await.err();
     assert!(missing.is_some_and(|e| e.is_not_found()), "{f}: NotFound");
 }
@@ -508,9 +513,17 @@ async fn assert_sink_refusal<M: Manifest<ChunkRef>>(manifest: &M, file: ChunkRef
     let error = view.load(&path, &mut RefusingSink).await.unwrap_err();
     let sink = matches!(error, ManifestError::Sink(_));
     assert!(sink, "{f}: wrong variant: {error:?}");
-    let source = core::error::Error::source(&error);
-    let kept = source.is_some_and(|s| s.downcast_ref::<Refused>().is_some());
-    assert!(kept, "{f}: the sink's own error left the chain");
+    // The positional seam reports the sink's failure as an `io::Error`, and
+    // the `io` error ends the source chain. The sink's own error is the one
+    // it carries.
+    let ManifestError::Sink(source) = error else {
+        unreachable!("the variant matched a moment ago")
+    };
+    let io: std::io::Error = *source
+        .downcast::<std::io::Error>()
+        .expect("the seam keeps the io error");
+    io.downcast::<Refused>()
+        .expect("the sink's own error rides in the io error");
 }
 
 /// A sink refusal is the seam's own `Sink`, never `Data`, on both formats.
@@ -693,17 +706,17 @@ fn an_inline_entry_is_a_loadable_value_and_opaque_is_not() {
             let entry = ManifestView::get(&view, &probe).await.unwrap().unwrap();
             assert_eq!(entry, want, "{path}");
             assert_eq!(entry.is_loadable(), loads.is_some(), "{path}: is_loadable");
-            let mut sink = MemSink::new();
+            let mut sink = MemWriteAt::new();
             let outcome = ManifestView::load(&view, &probe, &mut sink).await;
             if let Some(bytes) = loads {
                 outcome.unwrap();
-                assert_eq!(sink.as_ref(), bytes, "{path}: the wrong bytes loaded");
+                assert_eq!(sink.as_bytes(), bytes, "{path}: the wrong bytes loaded");
             } else {
                 let error = outcome.unwrap_err();
                 let no_data =
                     matches!(&error, ManifestError::NoData(p) if p.as_bytes() == path.as_bytes());
                 assert!(no_data, "{path}: wrong error: {error:?}");
-                assert!(sink.as_ref().is_empty(), "{path}: bytes reached the sink");
+                assert!(sink.as_bytes().is_empty(), "{path}: bytes reached the sink");
             }
         }
 

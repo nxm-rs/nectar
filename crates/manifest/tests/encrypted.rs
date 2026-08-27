@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use nectar_file::{File, MemSink, Policy};
+use nectar_file::{File, Policy};
 use nectar_ldb::{Database, Encrypted as EncryptedSeal, V1};
 use nectar_manifest::{
     Batch, ListEntry, Manifest, ManifestMeta, ManifestPath, ManifestView, MapEntry, MetadataView,
@@ -17,6 +17,7 @@ use nectar_manifest::{
 };
 use nectar_mantaray::{MantarayManifest, NodeLoadSaver};
 use nectar_primitives::{DEFAULT_BODY_SIZE, EncryptedChunkRef};
+use nectar_testing::MemWriteAt;
 use nectar_testing::run;
 
 mod common;
@@ -53,9 +54,9 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
     }];
     assert_eq!(listing.entries(), want);
 
-    let mut sink = MemSink::new();
+    let mut sink = MemWriteAt::new();
     view.load(&bin, &mut sink).await.unwrap();
-    assert_eq!(sink.as_ref(), data);
+    assert_eq!(sink.as_bytes(), data);
 
     // The one-shot removal leaves the entry unreachable under its new root.
     let pruned = manifest.remove(root, bin.clone()).await.unwrap();

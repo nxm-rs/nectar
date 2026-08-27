@@ -22,8 +22,8 @@ auto_impl = { workspace = true }
 derive_more = { workspace = true }
 futures-util = { workspace = true }
 nectar-marker = { workspace = true }
-# Reference, ChunkRef, the positional sink vocabulary and the boxed-error
-# alias the erased seam reports through.
+# Reference, ChunkRef and the boxed-error alias the erased seam reports
+# through.
 nectar-primitives = { workspace = true }
 nectar-tasks = { workspace = true }
 thiserror = { workspace = true }

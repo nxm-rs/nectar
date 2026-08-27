@@ -30,7 +30,7 @@ use nectar_postage_issuer::{
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::ChunkPut;
+use nectar_primitives::store::{BoxedError, ChunkPut};
 
 type SealedChunk = Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>;
 
@@ -52,15 +52,15 @@ impl ChunkPut<Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>> for Collect {
 struct SharedBuf(Arc<Vec<u8>>);
 
 impl ReadAt for SharedBuf {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
         let start = (offset as usize).min(self.0.len());
         let take = buf.len().min(self.0.len() - start);
         buf[..take].copy_from_slice(&self.0[start..start + take]);
         Ok(take)
     }
 
-    fn len(&self) -> std::io::Result<u64> {
-        Ok(self.0.len() as u64)
+    fn size(&self) -> Option<u64> {
+        Some(self.0.len() as u64)
     }
 }
 

@@ -1,17 +1,19 @@
 //! The stamped chunk as a unit of transfer, and the bridge beneath it.
 //!
-//! A sink that demands payment proof names [`Validated`]; handing it an
-//! unproven pair is then a type error:
+//! Not named `sink`: that name is reserved for the `futures` types.
+//!
+//! A put target that demands payment proof names [`Validated`]; handing it
+//! an unproven pair is then a type error:
 //!
 //! ```compile_fail
 //! use nectar_postage::{StampedChunk, Unvalidated, Validated};
 //! use nectar_primitives::{ChunkPut, Verified};
 //!
 //! async fn pushsync<S: ChunkPut<StampedChunk<Verified, Validated>>>(
-//!     sink: S,
+//!     target: S,
 //!     pair: StampedChunk<Verified, Unvalidated>,
 //! ) -> Result<(), S::Error> {
-//!     sink.put(pair).await
+//!     target.put(pair).await
 //! }
 //! ```
 
@@ -22,7 +24,7 @@ use nectar_primitives::{AnyChunkSet, Chunk, ChunkPut, Verified};
 
 use crate::{StampedChunk, ValidationState};
 
-/// Admits a stamp-indifferent store as a stamped sink.
+/// Admits a stamp-indifferent store as a stamped put target.
 ///
 /// The put splits the pair and persists the chunk; the stamp is dropped.
 /// Correct only for local-persist targets whose storage does not account for
@@ -107,11 +109,11 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct RecordingSink {
+    struct RecordingPut {
         seen: Mutex<Vec<ChunkAddress>>,
     }
 
-    impl ChunkPut<StampedChunk> for RecordingSink {
+    impl ChunkPut<StampedChunk> for RecordingPut {
         type Error = Infallible;
 
         async fn put(&self, stamped: StampedChunk) -> Result<(), Self::Error> {
@@ -124,12 +126,12 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct DualSink {
+    struct DualPut {
         bare: Mutex<Vec<ChunkAddress>>,
         paid: Mutex<Vec<ChunkAddress>>,
     }
 
-    impl ChunkPut<Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>> for DualSink {
+    impl ChunkPut<Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>> for DualPut {
         type Error = Infallible;
 
         async fn put(
@@ -141,7 +143,7 @@ mod tests {
         }
     }
 
-    impl ChunkPut<StampedChunk> for DualSink {
+    impl ChunkPut<StampedChunk> for DualPut {
         type Error = Infallible;
 
         async fn put(&self, stamped: StampedChunk) -> Result<(), Self::Error> {
@@ -157,11 +159,11 @@ mod tests {
     fn stamp_indifferent_persists_the_chunk() {
         run(async {
             let store = Store::new();
-            let sink = StampIndifferent::new(&store);
+            let target = StampIndifferent::new(&store);
             let pair = stamped(b"local persist");
             let address = *pair.address();
 
-            sink.put(pair).await.expect("infallible put");
+            target.put(pair).await.expect("infallible put");
             assert!(store.get(&address).is_some());
         });
     }
@@ -170,11 +172,11 @@ mod tests {
     fn stamp_indifferent_accepts_an_unvalidated_pair() {
         run(async {
             let store = Store::new();
-            let sink = StampIndifferent::new(&store);
+            let target = StampIndifferent::new(&store);
             let (_, pair) = signed(b"unproven stamp");
             let address = *pair.address();
 
-            sink.put(pair).await.expect("infallible put");
+            target.put(pair).await.expect("infallible put");
             assert!(store.get(&address).is_some());
         });
     }
@@ -183,7 +185,7 @@ mod tests {
     fn tee_carries_the_stamped_unit() {
         run(async {
             let store = Store::new();
-            let recorder = RecordingSink::default();
+            let recorder = RecordingPut::default();
             let tee = Tee::new(StampIndifferent::new(&store), &recorder);
             let pair = stamped(b"both legs");
             let address = *pair.address();
@@ -201,16 +203,16 @@ mod tests {
     }
 
     async fn demand_paid<S: ChunkPut<StampedChunk<Verified, Validated>>>(
-        sink: S,
+        target: S,
         pair: StampedChunk,
     ) -> Result<(), S::Error> {
-        sink.put(pair).await
+        target.put(pair).await
     }
 
     #[test]
     fn blanket_impls_delegate() {
         run(async {
-            let recorder = Arc::new(RecordingSink::default());
+            let recorder = Arc::new(RecordingPut::default());
             let pair = stamped(b"delegation");
             let address = *pair.address();
 
@@ -226,17 +228,19 @@ mod tests {
     }
 
     #[test]
-    fn one_sink_serves_both_units() {
+    fn one_put_serves_both_units() {
         run(async {
-            let sink = DualSink::default();
+            let target = DualPut::default();
             let pair = stamped(b"two units");
             let address = *pair.address();
             let (chunk, _) = pair.clone().into_parts();
 
-            sink.put(chunk).await.expect("bare unit accepted");
-            demand_paid(&sink, pair).await.expect("paid unit accepted");
-            assert_eq!(*sink.bare.lock().expect("bare lock"), [address]);
-            assert_eq!(*sink.paid.lock().expect("paid lock"), [address]);
+            target.put(chunk).await.expect("bare unit accepted");
+            demand_paid(&target, pair)
+                .await
+                .expect("paid unit accepted");
+            assert_eq!(*target.bare.lock().expect("bare lock"), [address]);
+            assert_eq!(*target.paid.lock().expect("paid lock"), [address]);
         });
     }
 }

@@ -15,12 +15,13 @@ use std::task::Poll;
 
 use nectar_file::{Policy, Window};
 use nectar_ldb::Database;
-use nectar_manifest::{Manifest, ManifestPath, ManifestView, MemSink};
+use nectar_manifest::{Manifest, ManifestPath, ManifestView};
 use nectar_mantaray::{MantarayManifest, NodeLoadSaver};
 use nectar_primitives::store::{ChunkGet, ChunkPut};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, DEFAULT_BODY_SIZE, Verified,
 };
+use nectar_testing::MemWriteAt;
 use nectar_testing::{Drive, GateStore, run};
 
 mod common;
@@ -90,14 +91,14 @@ fn peak_gets<M: Manifest<ChunkRef>>(
     data: &[u8],
 ) -> usize {
     let mut drive = Drive::new(async move {
-        let mut sink = MemSink::new();
+        let mut sink = MemWriteAt::new();
         manifest.at(root).load(&path(), &mut sink).await.unwrap();
         sink
     });
     loop {
         match drive.poll() {
             Poll::Ready(sink) => {
-                assert_eq!(sink.as_ref(), data, "the load served the wrong bytes");
+                assert_eq!(sink.as_bytes(), data, "the load served the wrong bytes");
                 break;
             }
             Poll::Pending => {

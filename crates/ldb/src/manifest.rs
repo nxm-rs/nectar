@@ -15,12 +15,12 @@ use futures_util::Stream;
 use futures_util::StreamExt;
 use nectar_file::load_reference;
 use nectar_manifest::{
-    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath,
-    ManifestView, MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem, Served,
-    SinkError, SiteConfig, serve_fallback,
+    Batch, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, ManifestView,
+    MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem, Served, SiteConfig,
+    serve_fallback,
 };
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, ContentOnlyChunkSet};
-use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
+use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet, WriteAt};
 use nectar_primitives::{Chunk, EntryRef};
 
 use crate::apply::ApplyError;
@@ -276,11 +276,11 @@ where
         Ok(served)
     }
 
-    async fn load<T: DataSink<Error: SinkError> + MaybeSend>(
+    async fn load<T: WriteAt + ?Sized>(
         &self,
         path: &ManifestPath,
         sink: &mut T,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<u64, Self::Error> {
         let entry = match path.content_key().map(Key::from) {
             Some(key) => self.get(&key).await?,
             None => None,
@@ -289,9 +289,11 @@ where
         // An inline value is its own data; references take the file walk.
         let reference = match entry {
             Entry::Inline(value) => {
-                return sink
-                    .write_at(0, value.as_bytes())
-                    .map_err(ManifestError::sink);
+                let bytes = value.as_bytes();
+                sink.write_all_at(0, bytes).map_err(ManifestError::sink)?;
+                // `VINLINE_MAX` is a `usize` constant, so a slice never crosses
+                // `u64` on a supported target.
+                return Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
             }
             Entry::Ref32(reference) => EntryRef::Plain(reference),
             Entry::Ref64(reference) => EntryRef::Encrypted(reference),

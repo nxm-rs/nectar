@@ -11,9 +11,9 @@
 use core::convert::Infallible;
 use core::task::{Context, Poll};
 
-use std::io;
+use nectar_marker::{MaybeSend, MaybeSync};
+use nectar_primitives::store::{BoxedError, ReadAt};
 
-// Only the positional adapter measures lengths.
 use crate::num::u64_from_usize;
 
 /// Pull-based byte source feeding one write.
@@ -22,7 +22,9 @@ use crate::num::u64_from_usize;
 /// source never retains the bytes it hands over.
 pub trait Source {
     /// Typed pull failure.
-    type Error;
+    ///
+    /// The house error shape: structured and boxable across a seam boundary.
+    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// Fill the front of `buf`, delivering the byte count; zero ends the
     /// source. A count past `buf.len()` breaks the contract and the driver
@@ -65,112 +67,21 @@ impl<T: Source + ?Sized> Source for &mut T {
     }
 }
 
-/// Random-access byte source; reads at distinct offsets are independent, so
-/// a positional target needs no cursor of its own.
-pub trait ReadAt {
-    /// Read into `buf` at `offset`, returning the bytes read; zero at or
-    /// past the end.
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize>;
-
-    /// Total source length in bytes.
-    fn len(&self) -> io::Result<u64>;
-
-    /// Whether the source has no bytes.
-    fn is_empty(&self) -> io::Result<bool> {
-        Ok(self.len()? == 0)
-    }
-}
-
-impl ReadAt for [u8] {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        let Ok(offset) = usize::try_from(offset) else {
-            return Ok(0);
-        };
-        let Some(tail) = self.get(offset..) else {
-            return Ok(0);
-        };
-        let take = tail.len().min(buf.len());
-        let (Some(src), Some((dst, _))) = (tail.get(..take), buf.split_at_mut_checked(take)) else {
-            return Ok(0);
-        };
-        dst.copy_from_slice(src);
-        Ok(take)
-    }
-
-    fn len(&self) -> io::Result<u64> {
-        Ok(u64_from_usize(<[u8]>::len(self)))
-    }
-}
-
-impl ReadAt for alloc::vec::Vec<u8> {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        self.as_slice().read_at(offset, buf)
-    }
-
-    fn len(&self) -> io::Result<u64> {
-        ReadAt::len(self.as_slice())
-    }
-}
-
-impl ReadAt for bytes::Bytes {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        <[u8] as ReadAt>::read_at(self.as_ref(), offset, buf)
-    }
-
-    fn len(&self) -> io::Result<u64> {
-        <[u8] as ReadAt>::len(self.as_ref())
-    }
-}
-
-impl<T: ReadAt + ?Sized> ReadAt for &T {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        (**self).read_at(offset, buf)
-    }
-
-    fn len(&self) -> io::Result<u64> {
-        (**self).len()
-    }
-}
-
-#[cfg(unix)]
-impl ReadAt for std::fs::File {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        std::os::unix::fs::FileExt::read_at(self, buf, offset)
-    }
-
-    fn len(&self) -> io::Result<u64> {
-        self.metadata().map(|metadata| metadata.len())
-    }
-}
-
-#[cfg(windows)]
-impl ReadAt for std::fs::File {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        std::os::windows::fs::FileExt::seek_read(self, buf, offset)
-    }
-
-    fn len(&self) -> io::Result<u64> {
-        self.metadata().map(|metadata| metadata.len())
-    }
-}
-
 /// Terminal failure pulling from a [`ReadAt`] target; every variant is
 /// final for the write that met it.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ReadAtError {
-    /// Sizing the source failed.
-    #[error("source length unavailable")]
-    Length {
-        /// Io error behind the failure.
-        source: io::Error,
-    },
+    /// The source reports no length.
+    #[error("source reports no length")]
+    LengthUnknown,
     /// Reading a leaf body from the source failed.
     #[error("read failed at offset {offset}")]
     Read {
         /// Offset of the failed read.
         offset: u64,
-        /// Io error behind the failure.
-        source: io::Error,
+        /// Seam error behind the failure.
+        source: BoxedError,
     },
     /// The source reported its end before the declared length was reached.
     #[error("short read at offset {offset}: {remaining} bytes missing")]
@@ -223,17 +134,14 @@ impl<R> ReadAtSource<R> {
 impl<R: ReadAt> ReadAtSource<R> {
     /// The declared length, sized once and memoized.
     fn declared(&mut self) -> Result<u64, ReadAtError> {
-        match self.len {
-            Some(len) => Ok(len),
-            None => {
-                let len = self
-                    .source
-                    .len()
-                    .map_err(|source| ReadAtError::Length { source })?;
-                self.len = Some(len);
-                Ok(len)
-            }
+        if let Some(len) = self.len {
+            return Ok(len);
         }
+        let Some(len) = self.source.size() else {
+            return Err(ReadAtError::LengthUnknown);
+        };
+        self.len = Some(len);
+        Ok(len)
     }
 
     /// Fill the front of `buf`, capped by the bytes the source still owes.
@@ -327,13 +235,13 @@ impl<R> AsyncReadSource<R> {
 
 #[cfg(feature = "tokio")]
 impl<R: ::tokio::io::AsyncRead + Unpin> Source for AsyncReadSource<R> {
-    type Error = io::Error;
+    type Error = ::tokio::io::Error;
 
     fn poll_fill(
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-    ) -> Poll<Result<usize, io::Error>> {
+    ) -> Poll<Result<usize, ::tokio::io::Error>> {
         let mut read = ::tokio::io::ReadBuf::new(buf);
         match core::pin::Pin::new(&mut self.inner).poll_read(cx, &mut read) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(read.filled().len())),
@@ -346,8 +254,6 @@ impl<R: ::tokio::io::AsyncRead + Unpin> Source for AsyncReadSource<R> {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    use alloc::vec::Vec;
-
     use nectar_testing::run;
 
     use super::*;
@@ -380,22 +286,12 @@ mod tests {
         let slice: &[u8] = &data;
         let mut buf = vec![0u8; 40];
         assert_eq!(slice.read_at(0, &mut buf).unwrap(), 40);
-        assert_eq!(buf, data[..40]);
+        assert_eq!(&buf, &data[..40]);
         assert_eq!(slice.read_at(80, &mut buf).unwrap(), 20);
-        assert_eq!(buf[..20], data[80..]);
+        assert_eq!(&buf[..20], &data[80..]);
         assert_eq!(slice.read_at(100, &mut buf).unwrap(), 0);
         assert_eq!(slice.read_at(u64::MAX, &mut buf).unwrap(), 0);
-        assert_eq!(ReadAt::len(slice).unwrap(), 100);
-    }
-
-    #[test]
-    fn a_shared_buffer_reads_at_the_same_offsets() {
-        let data: Vec<u8> = (0..100u32).map(|i| (i % 251) as u8).collect();
-        let owned = bytes::Bytes::from(data.clone());
-        let mut buf = vec![0u8; 40];
-        assert_eq!(owned.read_at(60, &mut buf).unwrap(), 40);
-        assert_eq!(buf, data[60..]);
-        assert_eq!(ReadAt::len(&owned).unwrap(), 100);
+        assert_eq!(slice.size(), Some(100));
     }
 
     #[test]
@@ -403,5 +299,39 @@ mod tests {
         let data: Vec<u8> = (0..1_000u32).map(|i| (i % 251) as u8).collect();
         let through_read_at = drain(ReadAtSource::new(data.clone()), 128).unwrap();
         assert_eq!(through_read_at, data);
+    }
+
+    /// A positional target that reports no length at all.
+    struct UnknownLength {
+        data: Vec<u8>,
+    }
+
+    impl ReadAt for UnknownLength {
+        fn read_at(&self, pos: u64, buf: &mut [u8]) -> Result<usize, BoxedError> {
+            let Ok(pos) = usize::try_from(pos) else {
+                return Ok(0);
+            };
+            let Some(tail) = self.data.get(pos..) else {
+                return Ok(0);
+            };
+            let take = tail.len().min(buf.len());
+            buf[..take].copy_from_slice(&tail[..take]);
+            Ok(take)
+        }
+
+        fn size(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_source_without_a_length_is_a_typed_failure() {
+        let data = vec![1u8, 2, 3];
+        let mut source = ReadAtSource::new(UnknownLength { data });
+        let mut buf = [0u8; 8];
+        assert!(matches!(
+            source.fill(&mut buf),
+            Err(ReadAtError::LengthUnknown)
+        ));
     }
 }

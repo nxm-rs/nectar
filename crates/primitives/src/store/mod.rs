@@ -8,12 +8,14 @@
 //! miss never reads as a failure and vice versa. A put unit declares what the
 //! store applies to it through [`PutUnit::Validation`]: none for a unit a
 //! local store takes as-is, a postage stamp for a unit the network accounts
-//! for.
+//! for. The positional byte seam [`ReadAt`] and [`WriteAt`] is the substrate
+//! a file load pulls from and writes into, beside the chunk map.
 
 mod content;
 mod memory;
 #[cfg(feature = "std")]
 mod retry;
+mod seam;
 mod tee;
 mod typed;
 mod verify;
@@ -25,6 +27,7 @@ pub use memory::MemoryStore;
 pub use nectar_tasks::Sleeper;
 #[cfg(feature = "std")]
 pub use retry::{RetryConfig, RetryingChunkGet};
+pub use seam::{ReadAt, WriteAt};
 pub use tee::{Tee, TeeError};
 pub use typed::{ChunkGet, ChunkGetSync, ChunkPut, NoValidation, PutUnit, TrustedGet};
 pub use verify::{VerifyError, VerifyingStore};
