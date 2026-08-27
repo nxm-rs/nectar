@@ -189,7 +189,8 @@ pub trait ManifestView<R: Reference = ChunkRef>: MaybeSend + MaybeSync {
         }
     }
 
-    /// Write the data bound to `path` into `sink`, starting at offset zero.
+    /// Write the data bound to `path` into `sink`, starting at offset zero,
+    /// and report the bytes written.
     ///
     /// Serves exactly what [`get`](Self::get) reports loadable; an opaque
     /// entry fails as [`NoData`](crate::ManifestError::NoData). The writes
@@ -198,7 +199,7 @@ pub trait ManifestView<R: Reference = ChunkRef>: MaybeSend + MaybeSync {
         &self,
         path: &ManifestPath,
         sink: &mut K,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
+    ) -> impl Future<Output = Result<u64, Self::Error>> + MaybeSend;
 
     /// Every bound content path, with its entry, in path order. The format's
     /// root slot never appears.

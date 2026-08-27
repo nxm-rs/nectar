@@ -7,8 +7,9 @@ use nectar_primitives::store::{MaybeSend, MaybeSync, TrustedGet};
 
 use crate::{File, LoadError, Policy, WriteAt};
 
-/// Drain the file at `reference` into `sink` under `policy`, reporting a sink
-/// failure as [`ManifestError::Sink`] and any other as [`ManifestError::Data`].
+/// Drain the file at `reference` into `sink` under `policy`, reporting the
+/// bytes written; a sink failure crosses as [`ManifestError::Sink`] and any
+/// other as [`ManifestError::Data`].
 ///
 /// The writes are idempotent overwrites, so rerun a failed load in full.
 pub async fn load_reference<S, K, F, const B: usize>(
@@ -16,7 +17,7 @@ pub async fn load_reference<S, K, F, const B: usize>(
     policy: Policy,
     reference: EntryRef,
     sink: &mut K,
-) -> Result<(), ManifestError<F>>
+) -> Result<u64, ManifestError<F>>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
     K: WriteAt + ?Sized,
@@ -24,7 +25,6 @@ where
     File::<S, B>::new(store, policy)
         .load(reference, sink)
         .await
-        .map(drop)
         .map_err(|error| match error {
             LoadError::Sink { source, .. } => ManifestError::sink(source),
             data => ManifestError::data(data),

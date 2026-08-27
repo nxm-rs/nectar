@@ -102,9 +102,11 @@ async fn exercise(manifest: &dyn ErasedManifest, base: &ChunkRef, file: &ChunkRe
     let none = manifest.dyn_floor(&root, &p("aaa")).await.unwrap();
     assert!(none.is_none(), "no path is at or below the probe");
 
-    // A load joins the whole chunk tree the entry names into the sink.
+    // A load joins the whole chunk tree the entry names into the sink, and
+    // reports the bytes it wrote.
     let mut sink = MemWriteAt::new();
-    manifest.dyn_load(&root, &index, &mut sink).await.unwrap();
+    let written = manifest.dyn_load(&root, &index, &mut sink).await.unwrap();
+    assert_eq!(written, u64::try_from(data.len()).unwrap());
     assert_eq!(sink.as_bytes(), data);
 
     // A removal is the same map vocabulary, and the removed path stops

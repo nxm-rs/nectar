@@ -304,7 +304,7 @@ where
         &self,
         path: &ManifestPath,
         sink: &mut K,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
+    ) -> impl Future<Output = Result<u64, Self::Error>> + MaybeSend {
         let path = path.clone();
         let store = self.data.clone();
         let policy = self.policy;

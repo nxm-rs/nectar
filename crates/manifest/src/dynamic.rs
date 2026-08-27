@@ -93,13 +93,14 @@ pub trait ErasedManifest: MaybeSend + MaybeSync {
         visit: &'a mut dyn DynVisit,
     ) -> BoxFuture<'a, Result<(), ErasedManifestError>>;
 
-    /// Write the data bound to `path` into `sink`, starting at offset zero.
+    /// Write the data bound to `path` into `sink`, starting at offset zero,
+    /// and report the bytes written.
     fn dyn_load<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
         sink: &'a mut (dyn WriteAt + 'a),
-    ) -> BoxFuture<'a, Result<(), ErasedManifestError>>;
+    ) -> BoxFuture<'a, Result<u64, ErasedManifestError>>;
 
     /// The site-level documents the manifest declares, each absent as `None`.
     fn dyn_site_config<'a>(
@@ -210,7 +211,7 @@ where
         root: &'a ChunkRef,
         path: &'a ManifestPath,
         sink: &'a mut (dyn WriteAt + 'a),
-    ) -> BoxFuture<'a, Result<(), ErasedManifestError>> {
+    ) -> BoxFuture<'a, Result<u64, ErasedManifestError>> {
         Box::pin(async move { self.at(*root).load(path, sink).await.map_err(erase) })
     }
 

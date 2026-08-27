@@ -280,7 +280,7 @@ where
         &self,
         path: &ManifestPath,
         sink: &mut T,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<u64, Self::Error> {
         let entry = match path.content_key().map(Key::from) {
             Some(key) => self.get(&key).await?,
             None => None,
@@ -289,9 +289,11 @@ where
         // An inline value is its own data; references take the file walk.
         let reference = match entry {
             Entry::Inline(value) => {
-                return sink
-                    .write_all_at(0, value.as_bytes())
-                    .map_err(ManifestError::sink);
+                let bytes = value.as_bytes();
+                sink.write_all_at(0, bytes).map_err(ManifestError::sink)?;
+                // `VINLINE_MAX` is a `usize` constant, so a slice never crosses
+                // `u64` on a supported target.
+                return Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
             }
             Entry::Ref32(reference) => EntryRef::Plain(reference),
             Entry::Ref64(reference) => EntryRef::Encrypted(reference),
